@@ -3,74 +3,67 @@ import re
 from typing import Dict, List, Tuple
 
 # ========================
-# 1. Price list (embedded from your PDF)
-# ========================
-
-# I've copied the content of "Diamond Price List 2026.pdf" as a single string.
-# You can also read it from a file if you prefer.
-open("Diamond Price List 2026.txt").read()
-===== Page 1 =====
-
- Printed In 28-Jan-2026  Current Page 1 from 13
-
-## قائمة أسعار التحاليل الخاصة بالمرضى
-
-Allergy Screen	Price	Result date	Collection notes	
-IgE (immunoglobulin E specific food	2500 L.E.	5 Days	1 ml serum, refrigerated	
-IgE (immunoglobulin E Specific	2000 L.E.	5 Days	1 ml serum, refrigerated	
-Mixed Allergy Panel	3700 L.E.	3 Days	2 ml serum, refrigerated	
-Pediatric Panel	2500 L.E.	5 Days	2 ml serum, refrigerated	
-Antiphospholipid antibody syndrome	Price	Result date	Collection notes	
-ACL IgG (Anti Cardiolipin IgG)	650 L.E.	1 Days	2 ml serum, refrigerated	
-...
-(Include the entire text from your PDF here. For brevity I've truncated, but you must insert the full text.)
-...
-"""
-
-# ========================
-# 2. Parse function
+# 1. Load and parse price list
 # ========================
 
 @st.cache_data
-def parse_price_list(text: str) -> Dict[str, int]:
-    price_list = {}
+def parse_price_list(file_path: str) -> Dict[str, int]:
+    """Read the text file and return a dict {test_name_lowercase: price}."""
+    with open(file_path, "r", encoding="utf-8") as f:
+        text = f.read()
+    
+    price_dict = {}
     for line in text.splitlines():
-        if not line.strip() or "Result date" in line or "Collection notes" in line or "Price" in line:
+        if not line.strip():
             continue
+        # Skip lines that are likely headers or footers
+        if any(header in line for header in ["Result date", "Collection notes", "Price", "Page"]):
+            continue
+        
+        # Look for a number followed by "L.E."
         matches = re.findall(r'(\d+)\s*L\.E\.', line)
         if matches:
+            # Assume the last occurrence is the actual price
             price = int(matches[-1])
+            # Find the position of that price in the line
             last_price_pos = line.rfind(matches[-1] + " L.E.")
             if last_price_pos == -1:
                 last_price_pos = line.rfind(matches[-1] + "L.E.")
             if last_price_pos != -1:
                 test_name = line[:last_price_pos].strip()
+                # Clean up the name: remove leading numbers, trailing digits, extra spaces
                 test_name = re.sub(r'^\d+\.\s*', '', test_name)
                 test_name = re.sub(r'\d+$', '', test_name).strip()
                 if test_name and price > 0:
-                    price_list[test_name.lower()] = price
-    return price_list
+                    price_dict[test_name.lower()] = price
+    return price_dict
 
 def find_tests(partial: str, price_dict: Dict[str, int]) -> List[Tuple[str, int]]:
+    """Return all tests whose name contains partial (case-insensitive)."""
     partial_lower = partial.lower()
     return [(name, price) for name, price in price_dict.items() if partial_lower in name]
 
 # ========================
-# 3. Streamlit UI
+# 2. Streamlit UI
 # ========================
 
 st.set_page_config(page_title="Medical Test Invoice", layout="wide")
 st.title("🧾 Medical Test Invoice Generator")
 
-# Load price list
-price_dict = parse_price_list(PRICE_LIST_TEXT)
-st.sidebar.success(f"✅ Loaded {len(price_dict)} tests")
+# Load price list (update the path if needed)
+PRICE_FILE = "Diamond Price List 2026.txt"
+try:
+    price_dict = parse_price_list(PRICE_FILE)
+    st.sidebar.success(f"✅ Loaded {len(price_dict)} tests")
+except FileNotFoundError:
+    st.error(f"❌ File '{PRICE_FILE}' not found. Please ensure it is in the same directory.")
+    st.stop()
 
 # Initialize session state
 if "selected_tests" not in st.session_state:
     st.session_state.selected_tests = []  # list of (name, price)
 
-# ---- Main area: add test ----
+# ---- Add test section ----
 st.subheader("Add a test")
 col1, col2 = st.columns([3, 1])
 with col1:
@@ -79,7 +72,7 @@ with col2:
     add_button = st.button("➕ Add Test")
 
 if add_button and search_term:
-    # exact match first
+    # Try exact match first
     key = search_term.lower()
     if key in price_dict:
         st.session_state.selected_tests.append((key, price_dict[key]))
@@ -95,7 +88,7 @@ if add_button and search_term:
             st.success(f"Added: {name.title()} – {price} L.E.")
             st.rerun()
         else:
-            # show multiple matches
+            # Show multiple matches
             st.info(f"Found {len(matches)} tests. Select one:")
             options = [f"{name.title()} – {price} L.E." for name, price in matches]
             selected_idx = st.selectbox("Choose a test", options, index=0, key="match_select")
@@ -125,7 +118,7 @@ else:
         st.session_state.selected_tests.clear()
         st.rerun()
 
-# Optional: download invoice as text
+# ---- Optional download ----
 if st.session_state.selected_tests:
     invoice_text = "MEDICAL TEST INVOICE\n" + "-"*30 + "\n"
     for name, price in st.session_state.selected_tests:
