@@ -1,134 +1,134 @@
+import streamlit as st
 import re
 from typing import Dict, List, Tuple
 
 # ========================
-# 1. Parse the price list
+# 1. Price list (embedded from your PDF)
 # ========================
 
+# I've copied the content of "Diamond Price List 2026.pdf" as a single string.
+# You can also read it from a file if you prefer.
+PRICE_LIST_TEXT = """
+===== Page 1 =====
+
+ Printed In 28-Jan-2026  Current Page 1 from 13
+
+## قائمة أسعار التحاليل الخاصة بالمرضى
+
+Allergy Screen	Price	Result date	Collection notes	
+IgE (immunoglobulin E specific food	2500 L.E.	5 Days	1 ml serum, refrigerated	
+IgE (immunoglobulin E Specific	2000 L.E.	5 Days	1 ml serum, refrigerated	
+Mixed Allergy Panel	3700 L.E.	3 Days	2 ml serum, refrigerated	
+Pediatric Panel	2500 L.E.	5 Days	2 ml serum, refrigerated	
+Antiphospholipid antibody syndrome	Price	Result date	Collection notes	
+ACL IgG (Anti Cardiolipin IgG)	650 L.E.	1 Days	2 ml serum, refrigerated	
+...
+(Include the entire text from your PDF here. For brevity I've truncated, but you must insert the full text.)
+...
+"""
+
+# ========================
+# 2. Parse function
+# ========================
+
+@st.cache_data
 def parse_price_list(text: str) -> Dict[str, int]:
-    """
-    Extract test names and prices from the given text.
-    Returns a dictionary mapping test name (lowercase) to price in L.E.
-    """
     price_list = {}
     for line in text.splitlines():
         if not line.strip() or "Result date" in line or "Collection notes" in line or "Price" in line:
             continue
-        # Find all occurrences of a number followed by "L.E." in the line
         matches = re.findall(r'(\d+)\s*L\.E\.', line)
         if matches:
             price = int(matches[-1])
-            # Extract test name: everything before the last price + "L.E." occurrence
             last_price_pos = line.rfind(matches[-1] + " L.E.")
             if last_price_pos == -1:
                 last_price_pos = line.rfind(matches[-1] + "L.E.")
             if last_price_pos != -1:
                 test_name = line[:last_price_pos].strip()
-                # Clean up test name: remove leading numbers and trailing digits
                 test_name = re.sub(r'^\d+\.\s*', '', test_name)
                 test_name = re.sub(r'\d+$', '', test_name).strip()
                 if test_name and price > 0:
                     price_list[test_name.lower()] = price
     return price_list
 
-# ========================
-# 2. Search functions
-# ========================
-
 def find_tests(partial: str, price_dict: Dict[str, int]) -> List[Tuple[str, int]]:
-    """Return list of (test_name, price) where test_name contains partial (case-insensitive)."""
     partial_lower = partial.lower()
     return [(name, price) for name, price in price_dict.items() if partial_lower in name]
 
 # ========================
-# 3. Interactive invoice
+# 3. Streamlit UI
 # ========================
 
-def show_invoice(items: List[Tuple[str, int]], total: int):
-    """Print a formatted invoice."""
-    print("\n" + "="*50)
-    print("INVOICE".center(50))
-    print("="*50)
-    print(f"{'Test Name':<40} {'Price (L.E.)':>10}")
-    print("-"*50)
-    for name, price in items:
-        display_name = name.title()
-        print(f"{display_name:<40} {price:>10}")
-    print("-"*50)
-    print(f"{'TOTAL':<40} {total:>10}")
-    print("="*50)
+st.set_page_config(page_title="Medical Test Invoice", layout="wide")
+st.title("🧾 Medical Test Invoice Generator")
 
-def main():
-    # Load the price list from the provided text file
-    try:
-        with open("Diamond Price List 2026.txt", "r", encoding="utf-8") as f:
-            raw_text = f.read()
-    except FileNotFoundError:
-        print("Error: 'Diamond Price List 2026.txt' not found. Please ensure the file is in the same directory.")
-        return
+# Load price list
+price_dict = parse_price_list(PRICE_LIST_TEXT)
+st.sidebar.success(f"✅ Loaded {len(price_dict)} tests")
 
-    price_dict = parse_price_list(raw_text)
-    print(f"Loaded {len(price_dict)} test entries.")
+# Initialize session state
+if "selected_tests" not in st.session_state:
+    st.session_state.selected_tests = []  # list of (name, price)
 
-    selected = []
-    while True:
-        print("\nOptions:")
-        print("1. Add a test")
-        print("2. Show current invoice")
-        print("3. Clear invoice")
-        print("4. Exit")
-        choice = input("Enter choice (1-4): ").strip()
-        if choice == "1":
-            test_input = input("Enter test name (or part of it): ").strip()
-            if not test_input:
-                continue
-            # First try exact match
-            key = test_input.lower()
-            if key in price_dict:
-                price = price_dict[key]
-                selected.append((key, price))
-                print(f"Added {test_input}: {price} L.E.")
-                continue
+# ---- Main area: add test ----
+st.subheader("Add a test")
+col1, col2 = st.columns([3, 1])
+with col1:
+    search_term = st.text_input("Enter test name (or part of it)", placeholder="e.g., cbc, ferritin, vitamin")
+with col2:
+    add_button = st.button("➕ Add Test")
 
-            # Partial search
-            matches = find_tests(test_input, price_dict)
-            if not matches:
-                print("No tests found matching that name.")
-                continue
-
-            if len(matches) == 1:
-                name, price = matches[0]
-                selected.append((name, price))
-                print(f"Added {name.title()}: {price} L.E.")
-            else:
-                print(f"Multiple tests found for '{test_input}':")
-                for idx, (name, price) in enumerate(matches[:20], 1):  # show up to 20
-                    print(f"  {idx}. {name.title()} - {price} L.E.")
-                choice_idx = input("Enter the number of the test to add (or 0 to cancel): ").strip()
-                if choice_idx.isdigit():
-                    idx = int(choice_idx)
-                    if 1 <= idx <= len(matches):
-                        name, price = matches[idx-1]
-                        selected.append((name, price))
-                        print(f"Added {name.title()}: {price} L.E.")
-                    elif idx != 0:
-                        print("Invalid number.")
-                else:
-                    print("Invalid input.")
-        elif choice == "2":
-            if not selected:
-                print("No tests added yet.")
-            else:
-                total = sum(price for _, price in selected)
-                show_invoice(selected, total)
-        elif choice == "3":
-            selected.clear()
-            print("Invoice cleared.")
-        elif choice == "4":
-            print("Goodbye!")
-            break
+if add_button and search_term:
+    # exact match first
+    key = search_term.lower()
+    if key in price_dict:
+        st.session_state.selected_tests.append((key, price_dict[key]))
+        st.success(f"Added: {key.title()} – {price_dict[key]} L.E.")
+        st.rerun()
+    else:
+        matches = find_tests(search_term, price_dict)
+        if not matches:
+            st.warning("No tests found.")
+        elif len(matches) == 1:
+            name, price = matches[0]
+            st.session_state.selected_tests.append((name, price))
+            st.success(f"Added: {name.title()} – {price} L.E.")
+            st.rerun()
         else:
-            print("Invalid choice.")
+            # show multiple matches
+            st.info(f"Found {len(matches)} tests. Select one:")
+            options = [f"{name.title()} – {price} L.E." for name, price in matches]
+            selected_idx = st.selectbox("Choose a test", options, index=0, key="match_select")
+            if st.button("Add selected test", key="add_selected"):
+                idx = options.index(selected_idx)
+                name, price = matches[idx]
+                st.session_state.selected_tests.append((name, price))
+                st.success(f"Added: {name.title()} – {price} L.E.")
+                st.rerun()
 
-if __name__ == "__main__":
-    main()
+# ---- Invoice display ----
+st.subheader("Current invoice")
+if not st.session_state.selected_tests:
+    st.info("No tests added yet.")
+else:
+    # Build table
+    data = []
+    total = 0
+    for name, price in st.session_state.selected_tests:
+        data.append({"Test": name.title(), "Price (L.E.)": price})
+        total += price
+    st.table(data)
+    st.metric("Total", f"{total} L.E.")
+    
+    # Clear button
+    if st.button("🗑️ Clear invoice"):
+        st.session_state.selected_tests.clear()
+        st.rerun()
+
+# Optional: download invoice as text
+if st.session_state.selected_tests:
+    invoice_text = "MEDICAL TEST INVOICE\n" + "-"*30 + "\n"
+    for name, price in st.session_state.selected_tests:
+        invoice_text += f"{name.title()}: {price} L.E.\n"
+    invoice_text += "-"*30 + f"\nTOTAL: {total} L.E."
+    st.download_button("📄 Download invoice", invoice_text, file_name="invoice.txt")
