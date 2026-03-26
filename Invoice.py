@@ -8,7 +8,7 @@ from typing import Dict, List, Tuple
 
 # I've copied the content of "Diamond Price List 2026.pdf" as a single string.
 # You can also read it from a file if you prefer.
-PRICE_LIST_TEXT = """
+open("Diamond Price List 2026.txt").read() = """
 ===== Page 1 =====
 
  Printed In 28-Jan-2026  Current Page 1 from 13
