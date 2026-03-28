@@ -1,56 +1,44 @@
 import streamlit as st
-import pdfplumber
 import re
 from typing import Dict, List, Tuple
 from fpdf import FPDF
-import io
 import pandas as pd
 
 # ========================
-# 1. Parse PDF price list
+# 1. Parse text price list
 # ========================
 
 @st.cache_data
-def parse_price_list_from_pdf(pdf_path: str) -> Dict[str, int]:
-    """Extract test names and prices from a multi-page PDF."""
-    price_dict = {}
+def parse_price_list_from_text(file_path: str) -> Dict[str, int]:
+    """Read the text file and return a dict {test_name_lowercase: price}."""
+    with open(file_path, "r", encoding="utf-8") as f:
+        text = f.read()
     
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text()
-            if not text:
-                continue
-            lines = text.split('\n')
-            for line in lines:
-                line = line.strip()
-                if not line:
-                    continue
-                # Skip obvious header/footer lines
-                if any(header in line for header in ["Result date", "Collection notes", "Price", "Page", "L.E."]):
-                    continue
-                
-                # Look for a price pattern: number followed by "L.E." (may be separated by a space)
-                matches = re.findall(r'(\d{1,5}(?:,\d{3})*)\s*L\.E\.', line)
-                if matches:
-                    # Take the last price found (most reliable)
-                    price_str = matches[-1].replace(',', '')
-                    try:
-                        price = int(price_str)
-                    except ValueError:
-                        continue
-                    
-                    # Find the position of that price in the line
-                    last_price_pos = line.rfind(matches[-1] + " L.E.")
-                    if last_price_pos == -1:
-                        last_price_pos = line.rfind(matches[-1] + "L.E.")
-                    if last_price_pos != -1:
-                        test_name = line[:last_price_pos].strip()
-                        # Clean up test name: remove leading numbers, trailing digits, extra spaces
-                        test_name = re.sub(r'^\d+\.\s*', '', test_name)
-                        test_name = re.sub(r'\d+$', '', test_name).strip()
-                        if test_name and price > 0:
-                            # Use lowercase as key for case-insensitive matching
-                            price_dict[test_name.lower()] = price
+    price_dict = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # Skip lines that are likely headers or footers
+        if any(header in line for header in ["Result date", "Collection notes", "Price", "Page"]):
+            continue
+        
+        # Look for a number followed by "L.E."
+        matches = re.findall(r'(\d+)\s*L\.E\.', line)
+        if matches:
+            # Assume the last occurrence is the actual price
+            price = int(matches[-1])
+            # Find the position of that price in the line
+            last_price_pos = line.rfind(matches[-1] + " L.E.")
+            if last_price_pos == -1:
+                last_price_pos = line.rfind(matches[-1] + "L.E.")
+            if last_price_pos != -1:
+                test_name = line[:last_price_pos].strip()
+                # Clean up the name: remove leading numbers, trailing digits, extra spaces
+                test_name = re.sub(r'^\d+\.\s*', '', test_name)
+                test_name = re.sub(r'\d+$', '', test_name).strip()
+                if test_name and price > 0:
+                    price_dict[test_name.lower()] = price
     return price_dict
 
 def find_tests(partial: str, price_dict: Dict[str, int]) -> List[Tuple[str, int]]:
@@ -110,13 +98,13 @@ def generate_pdf_invoice(tests: List[Tuple[str, int]], total: int) -> bytes:
 st.set_page_config(page_title="Orange Lab - Medical Test Invoice", layout="wide")
 st.title("🧾 Orange Lab Invoice Generator")
 
-# Load price list
-PRICE_FILE = "Diamond Price List 2026.pdf"
+# Load price list from text file
+PRICE_FILE = "Diamond Price List 2026.txt"
 try:
-    price_dict = parse_price_list_from_pdf(PRICE_FILE)
-    st.sidebar.success(f"✅ Loaded {len(price_dict)} tests from PDF")
-except Exception as e:
-    st.error(f"❌ Could not load PDF: {e}")
+    price_dict = parse_price_list_from_text(PRICE_FILE)
+    st.sidebar.success(f"✅ Loaded {len(price_dict)} tests from text file")
+except FileNotFoundError:
+    st.error(f"❌ File '{PRICE_FILE}' not found. Please ensure it is in the same directory.")
     st.stop()
 
 # Initialize session state
