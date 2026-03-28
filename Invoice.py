@@ -6,7 +6,7 @@ import pandas as pd
 from io import BytesIO
 
 # ========================
-# 1. Parse text price list
+# 1. Parse text price list (direct file)
 # ========================
 
 @st.cache_data
@@ -16,12 +16,14 @@ def parse_price_list_from_text(file_path: str) -> Dict[str, int]:
         content = f.read()
 
     price_dict = {}
+    # Match a price like "270 L.E." or "270L.E." or "270 L.E"
     price_pattern = re.compile(r'(\d{1,5}(?:,\d{3})?)\s*L\.E\.?')
-    
+
     for line in content.splitlines():
         line = line.strip()
         if not line:
             continue
+        # Skip lines that are obvious headers/footers
         if any(header in line for header in ["Result date", "Collection notes", "Price", "Page"]):
             continue
 
@@ -33,7 +35,9 @@ def parse_price_list_from_text(file_path: str) -> Dict[str, int]:
             except ValueError:
                 continue
 
+            # Everything before the matched price is the test name
             test_name = line[:match.start()].strip()
+            # Remove trailing numbers (e.g., "123" at the end)
             test_name = re.sub(r'\d+$', '', test_name).strip()
             if test_name and price > 0:
                 price_dict[test_name.lower()] = price
@@ -56,12 +60,12 @@ class ReceiptPDF(FPDF):
         self.set_font("Arial", "", 10)
         self.cell(0, 5, "Medical Test Invoice", ln=True, align="C")
         self.ln(10)
-    
+
     def footer(self):
         self.set_y(-15)
         self.set_font("Arial", "I", 8)
         self.cell(0, 10, f"Page {self.page_no()}", align="C")
-    
+
     def receipt_body(self, tests: List[Tuple[str, int]], total: int, discount_percent: float = 0):
         self.set_font("Arial", "", 12)
         # Table header
@@ -118,12 +122,12 @@ try:
     price_dict = parse_price_list_from_text(PRICE_FILE)
     st.sidebar.success(f"✅ Loaded {len(price_dict)} tests from {PRICE_FILE}")
 
-    # Debug: show first 20 tests in sidebar
-    st.sidebar.subheader("🔍 Sample of loaded tests")
+    # Debug: show first 30 tests in sidebar (to verify ft3, t3, etc.)
+    st.sidebar.subheader("🔍 Sample of loaded tests (first 30)")
     if price_dict:
-        sample_items = list(price_dict.items())[:20]
+        sample_items = list(price_dict.items())[:30]
         for name, price in sample_items:
-            st.sidebar.write(f"{name[:35]:35} : {price} L.E.")
+            st.sidebar.write(f"{name[:40]:40} : {price} L.E.")
     else:
         st.sidebar.error("No tests were extracted. Check the file format.")
         # Show first 10 lines to help debug
@@ -147,7 +151,7 @@ if "discount_percent" not in st.session_state:
 st.subheader("➕ Add a test")
 col1, col2 = st.columns([3, 1])
 with col1:
-    search_term = st.text_input("Enter test name (or part of it)", placeholder="e.g., cbc, ferritin, vitamin")
+    search_term = st.text_input("Enter test name (or part of it)", placeholder="e.g., ft3, cbc, ferritin")
 with col2:
     add_button = st.button("Add Test")
 
@@ -184,33 +188,32 @@ if not st.session_state.selected_tests:
 else:
     # Calculate subtotal
     total = sum(price for _, price in st.session_state.selected_tests)
-    
-    # Discount input (sidebar or inline – let's put it inline near the table)
-    col_discount, col_empty = st.columns([1, 2])
-    with col_discount:
-        discount = st.number_input(
-            "Discount (%)",
-            min_value=0.0,
-            max_value=100.0,
-            value=st.session_state.discount_percent,
-            step=1.0,
-            format="%.0f"
-        )
-        if discount != st.session_state.discount_percent:
-            st.session_state.discount_percent = discount
-            st.rerun()
-    
+
+    # Discount input
+    st.write("**Discount**")
+    discount = st.number_input(
+        "Discount (%)",
+        min_value=0.0,
+        max_value=100.0,
+        value=st.session_state.discount_percent,
+        step=1.0,
+        format="%.0f"
+    )
+    if discount != st.session_state.discount_percent:
+        st.session_state.discount_percent = discount
+        st.rerun()
+
     # Compute discounted total
     discount_amount = total * st.session_state.discount_percent / 100
     final_total = total - discount_amount
-    
+
     # Display table
     data = []
     for name, price in st.session_state.selected_tests:
         data.append({"Test": name.title(), "Price (L.E.)": price})
     df = pd.DataFrame(data)
     st.table(df)
-    
+
     # Show totals
     st.write(f"**Subtotal:** {total:,} L.E.")
     if st.session_state.discount_percent > 0:
@@ -218,7 +221,7 @@ else:
         st.metric("Total after discount", f"{final_total:,.0f} L.E.")
     else:
         st.metric("Total", f"{total:,} L.E.")
-    
+
     # Buttons
     col_clear, col_download = st.columns(2)
     with col_clear:
@@ -238,4 +241,4 @@ else:
                 data=pdf_bytes,
                 file_name="orange_lab_invoice.pdf",
                 mime="application/pdf"
-)
+            )
