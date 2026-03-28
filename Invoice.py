@@ -3,27 +3,26 @@ import re
 from typing import Dict, List, Tuple
 from fpdf import FPDF
 import pandas as pd
+import io
 
 # ========================
-# 1. Parse text price list (improved)
+# 1. Parse text price list (improved + debug)
 # ========================
 
-@st.cache_data
-def parse_price_list_from_text(file_path: str) -> Dict[str, int]:
-    """Read the text file and return a dict {test_name_lowercase: price}."""
-    with open(file_path, "r", encoding="utf-8") as f:
-        lines = f.readlines()
-
+def parse_price_list_from_text(text_content: str) -> Dict[str, int]:
+    """Parse the text content and return a dict {test_name_lowercase: price}."""
     price_dict = {}
     price_pattern = re.compile(r'(\d{1,5}(?:,\d{3})?)\s*L\.E\.?')
     
-    for line in lines:
+    lines = text_content.splitlines()
+    for line_num, line in enumerate(lines, 1):
         line = line.strip()
         if not line:
             continue
+        # Skip lines that are likely headers/footers
         if any(header in line for header in ["Result date", "Collection notes", "Price", "Page"]):
             continue
-        
+
         match = price_pattern.search(line)
         if match:
             price_str = match.group(1).replace(',', '')
@@ -33,9 +32,15 @@ def parse_price_list_from_text(file_path: str) -> Dict[str, int]:
                 continue
 
             test_name = line[:match.start()].strip()
-            test_name = re.sub(r'\d+$', '', test_name).strip()
+            test_name = re.sub(r'\d+$', '', test_name).strip()  # remove trailing numbers
             if test_name and price > 0:
+                # Keep original test name for display, but store lowercase for search
                 price_dict[test_name.lower()] = price
+        else:
+            # Debug: optionally show lines without price
+            # Uncomment to see skipped lines
+            # st.sidebar.write(f"Skipped line {line_num}: {line}")
+            pass
 
     return price_dict
 
@@ -92,87 +97,103 @@ def generate_pdf_invoice(tests: List[Tuple[str, int]], total: int) -> bytes:
 st.set_page_config(page_title="Orange Lab - Medical Test Invoice", layout="wide")
 st.title("🧾 Orange Lab Invoice Generator")
 
-# Load price list from text file
-PRICE_FILE = "Diamond Price List 2026.txt"
-try:
-    price_dict = parse_price_list_from_text(PRICE_FILE)
-    st.sidebar.success(f"✅ Loaded {len(price_dict)} tests from text file")
-    
-    # Debug: show first 10 tests
-    st.sidebar.subheader("🔍 Sample of loaded tests")
-    if price_dict:
-        sample_items = list(price_dict.items())[:10]
-        for name, price in sample_items:
-            st.sidebar.write(f"{name[:35]:35} : {price} L.E.")
-    else:
-        st.sidebar.error("No tests loaded! Check file format.")
-except FileNotFoundError:
-    st.error(f"❌ File '{PRICE_FILE}' not found. Please ensure it is in the same directory.")
-    st.stop()
+# ---- File uploader ----
+st.sidebar.subheader("📁 Upload Price List")
+uploaded_file = st.sidebar.file_uploader("Choose the text file (Diamond Price List 2026.txt)", type=["txt"])
+
+if uploaded_file is not None:
+    try:
+        # Read file content (handle potential encoding issues)
+        content = uploaded_file.getvalue().decode("utf-8")
+        price_dict = parse_price_list_from_text(content)
+        st.sidebar.success(f"✅ Loaded {len(price_dict)} tests")
+        
+        # Debug: show sample of extracted tests
+        st.sidebar.subheader("🔍 Sample of loaded tests")
+        if price_dict:
+            sample_items = list(price_dict.items())[:20]
+            for name, price in sample_items:
+                st.sidebar.write(f"{name[:35]:35} : {price} L.E.")
+        else:
+            st.sidebar.error("No tests were extracted. Check file format.")
+            # Show first few lines to help debug
+            st.sidebar.subheader("First 10 lines of file:")
+            for i, line in enumerate(content.splitlines()[:10], 1):
+                st.sidebar.write(f"{i}: {line}")
+    except Exception as e:
+        st.sidebar.error(f"Error reading file: {e}")
+        st.stop()
+else:
+    st.sidebar.info("Please upload the price list text file.")
+    price_dict = {}  # empty until file is uploaded
 
 # Initialize session state
 if "selected_tests" not in st.session_state:
     st.session_state.selected_tests = []
 
-# ---- Add test section ----
-st.subheader("➕ Add a test")
-col1, col2 = st.columns([3, 1])
-with col1:
-    search_term = st.text_input("Enter test name (or part of it)", placeholder="e.g., cbc, ferritin, vitamin")
-with col2:
-    add_button = st.button("Add Test")
+# Only allow adding tests if we have a price_dict
+if price_dict:
+    # ---- Add test section ----
+    st.subheader("➕ Add a test")
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        search_term = st.text_input("Enter test name (or part of it)", placeholder="e.g., cbc, ferritin, vitamin")
+    with col2:
+        add_button = st.button("Add Test")
 
-if add_button and search_term:
-    key = search_term.lower()
-    if key in price_dict:
-        st.session_state.selected_tests.append((key, price_dict[key]))
-        st.success(f"Added: {key.title()} – {price_dict[key]} L.E.")
-        st.rerun()
-    else:
-        matches = find_tests(search_term, price_dict)
-        if not matches:
-            st.warning("No tests found.")
-        elif len(matches) == 1:
-            name, price = matches[0]
-            st.session_state.selected_tests.append((name, price))
-            st.success(f"Added: {name.title()} – {price} L.E.")
+    if add_button and search_term:
+        key = search_term.lower()
+        if key in price_dict:
+            st.session_state.selected_tests.append((key, price_dict[key]))
+            st.success(f"Added: {key.title()} – {price_dict[key]} L.E.")
             st.rerun()
         else:
-            st.info(f"Found {len(matches)} tests. Select one:")
-            options = [f"{name.title()} – {price} L.E." for name, price in matches]
-            selected_idx = st.selectbox("Choose a test", options, index=0, key="match_select")
-            if st.button("Add selected test", key="add_selected"):
-                idx = options.index(selected_idx)
-                name, price = matches[idx]
+            matches = find_tests(search_term, price_dict)
+            if not matches:
+                st.warning("No tests found.")
+            elif len(matches) == 1:
+                name, price = matches[0]
                 st.session_state.selected_tests.append((name, price))
                 st.success(f"Added: {name.title()} – {price} L.E.")
                 st.rerun()
+            else:
+                st.info(f"Found {len(matches)} tests. Select one:")
+                options = [f"{name.title()} – {price} L.E." for name, price in matches]
+                selected_idx = st.selectbox("Choose a test", options, index=0, key="match_select")
+                if st.button("Add selected test", key="add_selected"):
+                    idx = options.index(selected_idx)
+                    name, price = matches[idx]
+                    st.session_state.selected_tests.append((name, price))
+                    st.success(f"Added: {name.title()} – {price} L.E.")
+                    st.rerun()
 
-# ---- Invoice display ----
-st.subheader("📋 Current invoice")
-if not st.session_state.selected_tests:
-    st.info("No tests added yet.")
+    # ---- Invoice display ----
+    st.subheader("📋 Current invoice")
+    if not st.session_state.selected_tests:
+        st.info("No tests added yet.")
+    else:
+        data = []
+        total = 0
+        for name, price in st.session_state.selected_tests:
+            data.append({"Test": name.title(), "Price (L.E.)": price})
+            total += price
+        df = pd.DataFrame(data)
+        st.table(df)
+        st.metric("Total", f"{total} L.E.")
+        
+        col_clear, col_download = st.columns(2)
+        with col_clear:
+            if st.button("🗑️ Clear invoice"):
+                st.session_state.selected_tests.clear()
+                st.rerun()
+        with col_download:
+            if st.button("📄 Download PDF Invoice"):
+                pdf_bytes = generate_pdf_invoice(st.session_state.selected_tests, total)
+                st.download_button(
+                    label="Click to download",
+                    data=pdf_bytes,
+                    file_name="orange_lab_invoice.pdf",
+                    mime="application/pdf"
+                )
 else:
-    data = []
-    total = 0
-    for name, price in st.session_state.selected_tests:
-        data.append({"Test": name.title(), "Price (L.E.)": price})
-        total += price
-    df = pd.DataFrame(data)
-    st.table(df)
-    st.metric("Total", f"{total} L.E.")
-    
-    col_clear, col_download = st.columns(2)
-    with col_clear:
-        if st.button("🗑️ Clear invoice"):
-            st.session_state.selected_tests.clear()
-            st.rerun()
-    with col_download:
-        if st.button("📄 Download PDF Invoice"):
-            pdf_bytes = generate_pdf_invoice(st.session_state.selected_tests, total)
-            st.download_button(
-                label="Click to download",
-                data=pdf_bytes,
-                file_name="orange_lab_invoice.pdf",
-                mime="application/pdf"
-    )
+    st.info("Please upload the price list text file to begin.")
