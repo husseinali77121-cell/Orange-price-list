@@ -194,6 +194,3 @@ if price_dict:
                     data=pdf_bytes,
                     file_name="orange_lab_invoice.pdf",
                     mime="application/pdf"
-                )
-else:
-    st.info("Please upload the price list text file to begin.")
