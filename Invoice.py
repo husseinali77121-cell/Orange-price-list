@@ -5,40 +5,38 @@ from fpdf import FPDF
 import pandas as pd
 
 # ========================
-# 1. Parse text price list
+# 1. Parse text price list (improved)
 # ========================
 
 @st.cache_data
 def parse_price_list_from_text(file_path: str) -> Dict[str, int]:
     """Read the text file and return a dict {test_name_lowercase: price}."""
     with open(file_path, "r", encoding="utf-8") as f:
-        text = f.read()
-    
+        lines = f.readlines()
+
     price_dict = {}
-    for line in text.splitlines():
+    price_pattern = re.compile(r'(\d{1,5}(?:,\d{3})?)\s*L\.E\.?')
+    
+    for line in lines:
         line = line.strip()
         if not line:
             continue
-        # Skip lines that are likely headers or footers
         if any(header in line for header in ["Result date", "Collection notes", "Price", "Page"]):
             continue
         
-        # Look for a number followed by "L.E."
-        matches = re.findall(r'(\d+)\s*L\.E\.', line)
-        if matches:
-            # Assume the last occurrence is the actual price
-            price = int(matches[-1])
-            # Find the position of that price in the line
-            last_price_pos = line.rfind(matches[-1] + " L.E.")
-            if last_price_pos == -1:
-                last_price_pos = line.rfind(matches[-1] + "L.E.")
-            if last_price_pos != -1:
-                test_name = line[:last_price_pos].strip()
-                # Clean up the name: remove leading numbers, trailing digits, extra spaces
-                test_name = re.sub(r'^\d+\.\s*', '', test_name)
-                test_name = re.sub(r'\d+$', '', test_name).strip()
-                if test_name and price > 0:
-                    price_dict[test_name.lower()] = price
+        match = price_pattern.search(line)
+        if match:
+            price_str = match.group(1).replace(',', '')
+            try:
+                price = int(price_str)
+            except ValueError:
+                continue
+
+            test_name = line[:match.start()].strip()
+            test_name = re.sub(r'\d+$', '', test_name).strip()
+            if test_name and price > 0:
+                price_dict[test_name.lower()] = price
+
     return price_dict
 
 def find_tests(partial: str, price_dict: Dict[str, int]) -> List[Tuple[str, int]]:
@@ -47,7 +45,7 @@ def find_tests(partial: str, price_dict: Dict[str, int]) -> List[Tuple[str, int]
     return [(name, price) for name, price in price_dict.items() if partial_lower in name]
 
 # ========================
-# 2. PDF Invoice Generation (Receipt Style)
+# 2. PDF Invoice Generation (unchanged)
 # ========================
 
 class ReceiptPDF(FPDF):
@@ -65,17 +63,14 @@ class ReceiptPDF(FPDF):
     
     def receipt_body(self, tests: List[Tuple[str, int]], total: int):
         self.set_font("Arial", "", 12)
-        # Table header
         self.set_fill_color(200, 200, 200)
         self.cell(100, 8, "Test", border=1, fill=True)
         self.cell(40, 8, "Price (L.E.)", border=1, fill=True, align="R")
         self.ln()
-        # Table rows
         for name, price in tests:
             self.cell(100, 8, name.title(), border=1)
             self.cell(40, 8, f"{price:,}", border=1, align="R")
             self.ln()
-        # Total row
         self.ln(5)
         self.set_font("Arial", "B", 12)
         self.cell(100, 8, "TOTAL", border=0)
@@ -85,11 +80,10 @@ class ReceiptPDF(FPDF):
         self.cell(0, 5, "Thank you for choosing Orange Lab", ln=True, align="C")
 
 def generate_pdf_invoice(tests: List[Tuple[str, int]], total: int) -> bytes:
-    """Generate a PDF invoice and return as bytes."""
     pdf = ReceiptPDF()
     pdf.add_page()
     pdf.receipt_body(tests, total)
-    return pdf.output(dest='S').encode('latin1')  # BytesIO compatible
+    return pdf.output(dest='S').encode('latin1')
 
 # ========================
 # 3. Streamlit UI
@@ -103,13 +97,22 @@ PRICE_FILE = "Diamond Price List 2026.txt"
 try:
     price_dict = parse_price_list_from_text(PRICE_FILE)
     st.sidebar.success(f"✅ Loaded {len(price_dict)} tests from text file")
+    
+    # Debug: show first 10 tests
+    st.sidebar.subheader("🔍 Sample of loaded tests")
+    if price_dict:
+        sample_items = list(price_dict.items())[:10]
+        for name, price in sample_items:
+            st.sidebar.write(f"{name[:35]:35} : {price} L.E.")
+    else:
+        st.sidebar.error("No tests loaded! Check file format.")
 except FileNotFoundError:
     st.error(f"❌ File '{PRICE_FILE}' not found. Please ensure it is in the same directory.")
     st.stop()
 
 # Initialize session state
 if "selected_tests" not in st.session_state:
-    st.session_state.selected_tests = []  # list of (name, price)
+    st.session_state.selected_tests = []
 
 # ---- Add test section ----
 st.subheader("➕ Add a test")
@@ -120,7 +123,6 @@ with col2:
     add_button = st.button("Add Test")
 
 if add_button and search_term:
-    # Exact match first
     key = search_term.lower()
     if key in price_dict:
         st.session_state.selected_tests.append((key, price_dict[key]))
@@ -151,7 +153,6 @@ st.subheader("📋 Current invoice")
 if not st.session_state.selected_tests:
     st.info("No tests added yet.")
 else:
-    # Display table
     data = []
     total = 0
     for name, price in st.session_state.selected_tests:
@@ -161,7 +162,6 @@ else:
     st.table(df)
     st.metric("Total", f"{total} L.E.")
     
-    # Buttons
     col_clear, col_download = st.columns(2)
     with col_clear:
         if st.button("🗑️ Clear invoice"):
@@ -175,4 +175,4 @@ else:
                 data=pdf_bytes,
                 file_name="orange_lab_invoice.pdf",
                 mime="application/pdf"
-            )
+    )
