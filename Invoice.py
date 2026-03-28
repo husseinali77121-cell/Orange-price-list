@@ -3,6 +3,7 @@ import re
 from typing import Dict, List, Tuple
 from fpdf import FPDF
 import pandas as pd
+from io import BytesIO
 
 # ========================
 # 1. Parse text price list (direct file)
@@ -83,7 +84,9 @@ def generate_pdf_invoice(tests: List[Tuple[str, int]], total: int) -> bytes:
     pdf = ReceiptPDF()
     pdf.add_page()
     pdf.receipt_body(tests, total)
-    return pdf.output(dest='S').encode('latin1')
+    buffer = BytesIO()
+    pdf.output(buffer)
+    return buffer.getvalue()
 
 # ========================
 # 3. Streamlit UI
