@@ -6,7 +6,7 @@ import pandas as pd
 from io import BytesIO
 
 # ========================
-# 1. Parse text price list (direct file)
+# 1. Parse text price list
 # ========================
 
 @st.cache_data
@@ -45,7 +45,7 @@ def find_tests(partial: str, price_dict: Dict[str, int]) -> List[Tuple[str, int]
     return [(name, price) for name, price in price_dict.items() if partial_lower in name]
 
 # ========================
-# 2. PDF Invoice Generation (receipt style with discount)
+# 2. PDF Invoice Generation
 # ========================
 
 class ReceiptPDF(FPDF):
@@ -130,13 +130,15 @@ except FileNotFoundError:
     st.error(f"❌ File '{PRICE_FILE}' not found. Please ensure it is in the same directory as the app.")
     st.stop()
 
+# تهيئة حالة الجلسة
 if "selected_tests" not in st.session_state:
     st.session_state.selected_tests = []
 if "discount_percent" not in st.session_state:
     st.session_state.discount_percent = 0.0
-# حالة لتخزين آخر قيمة مختارة من القائمة المنسدلة لتجنب الإضافة المتكررة
-if "last_selected_option" not in st.session_state:
-    st.session_state.last_selected_option = None
+if "matches_list" not in st.session_state:
+    st.session_state.matches_list = []       # لتخزين نتائج البحث الحالية
+if "previous_choice" not in st.session_state:
+    st.session_state.previous_choice = None  # لتتبع القيمة السابقة للـ selectbox
 
 # ---- Add test section ----
 st.subheader("➕ Add a test")
@@ -146,8 +148,10 @@ with col1:
 with col2:
     add_button = st.button("Add Test")
 
+# معالجة زر البحث
 if add_button and search_term:
     key = search_term.lower()
+    # حالة التطابق التام
     if key in price_dict:
         st.session_state.selected_tests.append((key, price_dict[key]))
         st.success(f"Added: {key.title()} – {price_dict[key]} L.E.")
@@ -156,36 +160,46 @@ if add_button and search_term:
         matches = find_tests(search_term, price_dict)
         if not matches:
             st.warning("No tests found.")
+            st.session_state.matches_list = []
         elif len(matches) == 1:
             name, price = matches[0]
             st.session_state.selected_tests.append((name, price))
             st.success(f"Added: {name.title()} – {price} L.E.")
             st.rerun()
         else:
-            st.info(f"Found {len(matches)} tests. Select one to add instantly:")
-            # إنشاء قائمة الخيارات
-            options = [f"{name.title()} – {price} L.E." for name, price in matches]
-            # عرض القائمة المنسدلة مع مفتاح فريد
-            selected_option = st.selectbox(
-                "Choose a test",
-                options,
-                index=0,
-                key="match_select"
-            )
-            # التحقق مما إذا تغيرت القيمة المختارة مقارنة بآخر قيمة مخزنة
-            if (selected_option != st.session_state.last_selected_option and
-                st.session_state.last_selected_option is not None):
-                # إيجاد الاختبار المطابق وإضافته
-                idx = options.index(selected_option)
-                name, price = matches[idx]
-                st.session_state.selected_tests.append((name, price))
-                st.success(f"Added: {name.title()} – {price} L.E.")
-                # تحديث القيمة المخزنة لآخر اختيار
-                st.session_state.last_selected_option = selected_option
-                st.rerun()
-            else:
-                # تحديث القيمة المخزنة لأول مرة أو عند عدم التغيير
-                st.session_state.last_selected_option = selected_option
+            # تخزين قائمة المطابقات في session_state لاستخدامها لاحقًا
+            st.session_state.matches_list = matches
+            st.info(f"Found {len(matches)} tests. Select one from the dropdown below:")
+            # إعادة تعيين القيمة السابقة للـ selectbox لضمان إضافة جديدة
+            st.session_state.previous_choice = None
+            st.rerun()
+
+# إذا كانت هناك قائمة مطابقات مخزنة، نعرض القائمة المنسدلة
+if st.session_state.matches_list:
+    matches = st.session_state.matches_list
+    options = [f"{name.title()} – {price} L.E." for name, price in matches]
+    
+    # إنشاء selectbox بمفتاح ثابت
+    selected = st.selectbox(
+        "Choose a test:",
+        options,
+        key="selectbox_choice"
+    )
+    
+    # التحقق من تغيير الاختيار
+    if selected != st.session_state.previous_choice and st.session_state.previous_choice is not None:
+        # إيجاد الاختبار المطابق
+        idx = options.index(selected)
+        name, price = matches[idx]
+        st.session_state.selected_tests.append((name, price))
+        st.success(f"Added: {name.title()} – {price} L.E.")
+        # إعادة تعيين القائمة والقيمة السابقة
+        st.session_state.matches_list = []
+        st.session_state.previous_choice = None
+        st.rerun()
+    else:
+        # تحديث القيمة السابقة لتكون القيمة الحالية (أول مرة أو لا تغيير)
+        st.session_state.previous_choice = selected
 
 # ---- Invoice display with discount ----
 st.subheader("📋 Current invoice")
@@ -241,4 +255,4 @@ else:
                 data=pdf_bytes,
                 file_name="orange_lab_invoice.pdf",
                 mime="application/pdf"
-            )
+    )
