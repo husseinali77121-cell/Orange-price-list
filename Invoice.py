@@ -34,7 +34,6 @@ def parse_price_list_from_text(file_path: str) -> Dict[str, int]:
                 continue
 
             test_name = line[:match.start()].strip()
-            # No removal of trailing digits – keep them!
             if test_name and price > 0:
                 price_dict[test_name.lower()] = price
 
@@ -135,6 +134,9 @@ if "selected_tests" not in st.session_state:
     st.session_state.selected_tests = []
 if "discount_percent" not in st.session_state:
     st.session_state.discount_percent = 0.0
+# حالة لتخزين آخر قيمة مختارة من القائمة المنسدلة لتجنب الإضافة المتكررة
+if "last_selected_option" not in st.session_state:
+    st.session_state.last_selected_option = None
 
 # ---- Add test section ----
 st.subheader("➕ Add a test")
@@ -160,15 +162,30 @@ if add_button and search_term:
             st.success(f"Added: {name.title()} – {price} L.E.")
             st.rerun()
         else:
-            st.info(f"Found {len(matches)} tests. Select one:")
+            st.info(f"Found {len(matches)} tests. Select one to add instantly:")
+            # إنشاء قائمة الخيارات
             options = [f"{name.title()} – {price} L.E." for name, price in matches]
-            selected_idx = st.selectbox("Choose a test", options, index=0, key="match_select")
-            if st.button("Add selected test", key="add_selected"):
-                idx = options.index(selected_idx)
+            # عرض القائمة المنسدلة مع مفتاح فريد
+            selected_option = st.selectbox(
+                "Choose a test",
+                options,
+                index=0,
+                key="match_select"
+            )
+            # التحقق مما إذا تغيرت القيمة المختارة مقارنة بآخر قيمة مخزنة
+            if (selected_option != st.session_state.last_selected_option and
+                st.session_state.last_selected_option is not None):
+                # إيجاد الاختبار المطابق وإضافته
+                idx = options.index(selected_option)
                 name, price = matches[idx]
                 st.session_state.selected_tests.append((name, price))
                 st.success(f"Added: {name.title()} – {price} L.E.")
+                # تحديث القيمة المخزنة لآخر اختيار
+                st.session_state.last_selected_option = selected_option
                 st.rerun()
+            else:
+                # تحديث القيمة المخزنة لأول مرة أو عند عدم التغيير
+                st.session_state.last_selected_option = selected_option
 
 # ---- Invoice display with discount ----
 st.subheader("📋 Current invoice")
