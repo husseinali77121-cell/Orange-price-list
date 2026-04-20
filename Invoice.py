@@ -195,13 +195,27 @@ if st.session_state.matches_list:
         st.session_state.matches_list = []
         st.rerun()
 
-# ---- Invoice display with discount ----
+# ---- Invoice display with discount and delete buttons ----
 st.subheader("📋 Current invoice")
 if not st.session_state.selected_tests:
     st.info("No tests added yet.")
 else:
-    total = sum(price for _, price in st.session_state.selected_tests)
-
+    total = 0
+    # عرض الاختبارات مع زر حذف لكل منها
+    for i, (name, price) in enumerate(st.session_state.selected_tests):
+        total += price
+        col1, col2, col3 = st.columns([4, 1, 1])
+        with col1:
+            st.write(name.title())
+        with col2:
+            st.write(f"{price} L.E.")
+        with col3:
+            if st.button("❌", key=f"delete_{i}_{name}"):
+                st.session_state.selected_tests.pop(i)
+                st.rerun()
+    
+    st.write("---")
+    
     st.write("**Discount**")
     discount = st.number_input(
         "Discount (%)",
@@ -217,12 +231,6 @@ else:
 
     discount_amount = total * st.session_state.discount_percent / 100
     final_total = total - discount_amount
-
-    data = []
-    for name, price in st.session_state.selected_tests:
-        data.append({"Test": name.title(), "Price (L.E.)": price})
-    df = pd.DataFrame(data)
-    st.table(df)
 
     st.write(f"**Subtotal:** {total:,} L.E.")
     if st.session_state.discount_percent > 0:
