@@ -136,9 +136,9 @@ if "selected_tests" not in st.session_state:
 if "discount_percent" not in st.session_state:
     st.session_state.discount_percent = 0.0
 if "matches_list" not in st.session_state:
-    st.session_state.matches_list = []       # لتخزين نتائج البحث الحالية
-if "previous_choice" not in st.session_state:
-    st.session_state.previous_choice = None  # لتتبع القيمة السابقة للـ selectbox
+    st.session_state.matches_list = []          # لتخزين نتائج البحث
+if "last_choice" not in st.session_state:
+    st.session_state.last_choice = None         # لتتبع آخر اختيار من القائمة
 
 # ---- Add test section ----
 st.subheader("➕ Add a test")
@@ -151,7 +151,7 @@ with col2:
 # معالجة زر البحث
 if add_button and search_term:
     key = search_term.lower()
-    # حالة التطابق التام
+    # تطابق تام
     if key in price_dict:
         st.session_state.selected_tests.append((key, price_dict[key]))
         st.success(f"Added: {key.title()} – {price_dict[key]} L.E.")
@@ -167,39 +167,33 @@ if add_button and search_term:
             st.success(f"Added: {name.title()} – {price} L.E.")
             st.rerun()
         else:
-            # تخزين قائمة المطابقات في session_state لاستخدامها لاحقًا
+            # حفظ المطابقات وعرض القائمة المنسدلة
             st.session_state.matches_list = matches
-            st.info(f"Found {len(matches)} tests. Select one from the dropdown below:")
-            # إعادة تعيين القيمة السابقة للـ selectbox لضمان إضافة جديدة
-            st.session_state.previous_choice = None
+            st.session_state.last_choice = None   # إعادة تعيين لتجنب إضافة تلقائية خاطئة
             st.rerun()
 
-# إذا كانت هناك قائمة مطابقات مخزنة، نعرض القائمة المنسدلة
+# عرض القائمة المنسدلة إذا كانت هناك مطابقات
 if st.session_state.matches_list:
     matches = st.session_state.matches_list
     options = [f"{name.title()} – {price} L.E." for name, price in matches]
     
-    # إنشاء selectbox بمفتاح ثابت
+    # إنشاء selectbox بمفتاح ثابت لتتبع التغيير
     selected = st.selectbox(
-        "Choose a test:",
+        "Choose a test to add:",
         options,
-        key="selectbox_choice"
+        key="test_selector"
     )
     
-    # التحقق من تغيير الاختيار
-    if selected != st.session_state.previous_choice and st.session_state.previous_choice is not None:
-        # إيجاد الاختبار المطابق
+    # إذا تغيرت القيمة عن آخر اختيار مخزن، نقوم بالإضافة
+    if selected != st.session_state.last_choice:
+        st.session_state.last_choice = selected
         idx = options.index(selected)
         name, price = matches[idx]
         st.session_state.selected_tests.append((name, price))
         st.success(f"Added: {name.title()} – {price} L.E.")
-        # إعادة تعيين القائمة والقيمة السابقة
+        # إخفاء القائمة المنسدلة بعد الإضافة
         st.session_state.matches_list = []
-        st.session_state.previous_choice = None
         st.rerun()
-    else:
-        # تحديث القيمة السابقة لتكون القيمة الحالية (أول مرة أو لا تغيير)
-        st.session_state.previous_choice = selected
 
 # ---- Invoice display with discount ----
 st.subheader("📋 Current invoice")
@@ -255,4 +249,4 @@ else:
                 data=pdf_bytes,
                 file_name="orange_lab_invoice.pdf",
                 mime="application/pdf"
-    )
+            )
