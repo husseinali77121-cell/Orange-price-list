@@ -41,10 +41,11 @@ def parse_price_list_from_text(file_path: str) -> Tuple[Dict[str, int], Dict[str
             test_name_original = line[:match.start()].strip()
             if test_name_original and price > 0:
                 key = test_name_original.lower()
-                # If duplicate key, keep the first occurrence (or you could warn)
+                # Keep first occurrence in case of duplicates
                 if key not in price_dict:
                     price_dict[key] = price
                     original_names[key] = test_name_original
+
     return price_dict, original_names
 
 def find_tests(partial: str, price_dict: Dict[str, int], original_names: Dict[str, str]) -> List[Tuple[str, int]]:
@@ -53,7 +54,7 @@ def find_tests(partial: str, price_dict: Dict[str, int], original_names: Dict[st
     results = []
     for key, price in price_dict.items():
         if partial_lower in key:
-            original = original_names.get(key, key)  # fallback just in case
+            original = original_names.get(key, key)  # fallback
             results.append((original, price))
     return results
 
@@ -81,7 +82,7 @@ class ReceiptPDF(FPDF):
         self.cell(40, 8, "Price (L.E.)", border=1, fill=True, align="R")
         self.ln()
         for name, price in tests:
-            self.cell(100, 8, name, border=1)           # original name preserved
+            self.cell(100, 8, name, border=1)
             self.cell(40, 8, f"{price:,}", border=1, align="R")
             self.ln()
         self.ln(5)
@@ -122,6 +123,8 @@ st.set_page_config(page_title="Orange Lab - Medical Test Invoice", layout="wide"
 st.title("🧾 Orange Lab Invoice Generator")
 
 PRICE_FILE = "Diamond Price List 2026.txt"
+
+# Load price list with error handling
 try:
     price_dict, original_names = parse_price_list_from_text(PRICE_FILE)
     st.sidebar.success(f"✅ Loaded {len(price_dict)} tests from {PRICE_FILE}")
@@ -143,6 +146,9 @@ try:
 except FileNotFoundError:
     st.error(f"❌ File '{PRICE_FILE}' not found. Please ensure it is in the same directory as the app.")
     st.stop()
+except Exception as e:
+    st.error(f"Error parsing price file: {e}")
+    st.stop()
 
 # Initialize session state
 if "selected_tests" not in st.session_state:
@@ -151,6 +157,8 @@ if "discount_percent" not in st.session_state:
     st.session_state.discount_percent = 0.0
 if "matches_list" not in st.session_state:
     st.session_state.matches_list = []            # list of (original_name, price)
+if "show_download" not in st.session_state:
+    st.session_state.show_download = False
 
 # ---- Add test section ----
 st.subheader("➕ Add a test")
@@ -158,17 +166,17 @@ col1, col2 = st.columns([3, 1])
 with col1:
     search_term = st.text_input("Enter test name (or part of it)", placeholder="e.g., ft4, cbc, ferritin", key="search_input")
 with col2:
-    add_button = st.button("Search Tests")
+    search_button = st.button("Search Tests")
 
 # Process search button
-if add_button and search_term:
+if search_button and search_term:
     matches = find_tests(search_term, price_dict, original_names)
     if not matches:
         st.warning("No tests found matching your query.")
         st.session_state.matches_list = []        # clear any previous list
     else:
         st.session_state.matches_list = matches   # store matches, will show dropdown
-        st.rerun()                                 # rerun to display the selection interface
+    st.rerun()
 
 # ---- Show selection dropdown when matches are available ----
 if st.session_state.matches_list:
@@ -176,14 +184,13 @@ if st.session_state.matches_list:
     # Build display strings for each match
     options = [f"{name}  –  {price} L.E." for name, price in matches]
 
-    # create a temporary key for the selectbox to avoid interference
     selected_option = st.selectbox(
         "Choose the exact test you want to add:",
         options,
         key="test_choice"
     )
 
-    # "Add chosen test" button (must be separate from the main search button)
+    # "Add chosen test" button
     if st.button("✅ Add selected test"):
         idx = options.index(selected_option)
         name, price = matches[idx]
@@ -233,13 +240,14 @@ else:
         if st.button("🗑️ Clear invoice"):
             st.session_state.selected_tests.clear()
             st.session_state.discount_percent = 0.0
+            st.session_state.show_download = False
             st.rerun()
     with col_download:
-        if st.button("📄 Prepare PDF"):
-            # we'll keep this button to show the download button
+        if st.button("📄 Prepare PDF Invoice"):
             st.session_state.show_download = True
+            st.rerun()
 
-    if st.session_state.get("show_download"):
+    if st.session_state.show_download:
         pdf_bytes = generate_pdf_invoice(
             st.session_state.selected_tests,
             total,
@@ -251,4 +259,4 @@ else:
             file_name="orange_lab_invoice.pdf",
             mime="application/pdf",
             key="pdf_download_button"
-        )
+               )
