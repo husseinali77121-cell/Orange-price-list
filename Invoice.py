@@ -4,6 +4,7 @@ from typing import Dict, List, Tuple
 from fpdf import FPDF
 import pandas as pd
 from io import BytesIO
+import qrcode
 
 # ========================
 # 1. Parse text price list
@@ -63,6 +64,16 @@ def find_tests(partial: str, price_dict: Dict[str, int], original_names: Dict[st
 # ========================
 
 class ReceiptPDF(FPDF):
+    def __init__(self):
+        super().__init__()
+        self.location_url = "https://maps.app.goo.gl/vLdtTk9KctLXtpE4A?g_st=ac"
+        # Generate QR code image once and store in memory
+        qr_img = qrcode.make(self.location_url)
+        buf = BytesIO()
+        qr_img.save(buf, format='PNG')
+        buf.seek(0)
+        self.qr_image_bytes = buf.read()
+
     def header(self):
         self.set_font("Arial", "B", 16)
         self.cell(0, 10, "Orange Lab", ln=True, align="C")
@@ -71,9 +82,18 @@ class ReceiptPDF(FPDF):
         self.ln(10)
 
     def footer(self):
-        self.set_y(-15)
+        self.set_y(-20)
         self.set_font("Arial", "I", 8)
         self.cell(0, 10, f"Page {self.page_no()}", align="C")
+
+        # Add QR code on the left side of footer
+        # Position: x=10, y from bottom, width=15, height=15
+        self.image(BytesIO(self.qr_image_bytes), x=10, y=self.get_y()-5, w=15, h=15)
+
+        # Optional: Add a small label near QR code
+        self.set_xy(25, self.get_y()-2)
+        self.set_font("Arial", "", 7)
+        self.cell(30, 4, "Scan for location", align="L")
 
     def receipt_body(self, tests: List[Tuple[str, int]], total: int, discount_percent: float = 0):
         self.set_font("Arial", "", 12)
@@ -106,6 +126,7 @@ class ReceiptPDF(FPDF):
         self.ln(10)
         self.set_font("Arial", "I", 10)
         self.cell(0, 5, "Thank you for choosing Orange Lab", ln=True, align="C")
+        self.ln(5)  # extra space before footer
 
 def generate_pdf_invoice(tests: List[Tuple[str, int]], total: int, discount_percent: float = 0) -> bytes:
     pdf = ReceiptPDF()
@@ -259,4 +280,4 @@ else:
             file_name="orange_lab_invoice.pdf",
             mime="application/pdf",
             key="pdf_download_button"
-               )
+            )
