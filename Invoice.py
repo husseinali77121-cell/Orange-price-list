@@ -10,12 +10,17 @@ from io import BytesIO
 # ========================
 
 @st.cache_data
-def parse_price_list_from_text(file_path: str) -> Dict[str, int]:
-    """Read the text file and return a dict {test_name_lowercase: price}."""
+def parse_price_list_from_text(file_path: str) -> Tuple[Dict[str, int], Dict[str, str]]:
+    """
+    Read the text file and return:
+      - price_dict: {test_name_lower: price}
+      - original_names: {test_name_lower: original_name}
+    """
     with open(file_path, "r", encoding="utf-8") as f:
         content = f.read()
 
     price_dict = {}
+    original_names = {}
     price_pattern = re.compile(r'(\d{1,5}(?:,\d{3})?)\s*L\.E\.?')
 
     for line in content.splitlines():
@@ -33,16 +38,24 @@ def parse_price_list_from_text(file_path: str) -> Dict[str, int]:
             except ValueError:
                 continue
 
-            test_name = line[:match.start()].strip()
-            if test_name and price > 0:
-                price_dict[test_name.lower()] = price
+            test_name_original = line[:match.start()].strip()
+            if test_name_original and price > 0:
+                key = test_name_original.lower()
+                # If duplicate key, keep the first occurrence (or you could warn)
+                if key not in price_dict:
+                    price_dict[key] = price
+                    original_names[key] = test_name_original
+    return price_dict, original_names
 
-    return price_dict
-
-def find_tests(partial: str, price_dict: Dict[str, int]) -> List[Tuple[str, int]]:
-    """Return all tests whose name contains partial (case-insensitive)."""
+def find_tests(partial: str, price_dict: Dict[str, int], original_names: Dict[str, str]) -> List[Tuple[str, int]]:
+    """Return list of (original_name, price) for tests whose name contains partial (case-insensitive)."""
     partial_lower = partial.lower()
-    return [(name, price) for name, price in price_dict.items() if partial_lower in name]
+    results = []
+    for key, price in price_dict.items():
+        if partial_lower in key:
+            original = original_names.get(key, key)  # fallback just in case
+            results.append((original, price))
+    return results
 
 # ========================
 # 2. PDF Invoice Generation
@@ -68,7 +81,7 @@ class ReceiptPDF(FPDF):
         self.cell(40, 8, "Price (L.E.)", border=1, fill=True, align="R")
         self.ln()
         for name, price in tests:
-            self.cell(100, 8, name.title(), border=1)
+            self.cell(100, 8, name, border=1)           # original name preserved
             self.cell(40, 8, f"{price:,}", border=1, align="R")
             self.ln()
         self.ln(5)
@@ -110,14 +123,15 @@ st.title("🧾 Orange Lab Invoice Generator")
 
 PRICE_FILE = "Diamond Price List 2026.txt"
 try:
-    price_dict = parse_price_list_from_text(PRICE_FILE)
+    price_dict, original_names = parse_price_list_from_text(PRICE_FILE)
     st.sidebar.success(f"✅ Loaded {len(price_dict)} tests from {PRICE_FILE}")
 
     st.sidebar.subheader("🔍 Sample of loaded tests (first 30)")
     if price_dict:
         sample_items = list(price_dict.items())[:30]
-        for name, price in sample_items:
-            st.sidebar.write(f"{name[:40]:40} : {price} L.E.")
+        for key, price in sample_items:
+            display_name = original_names.get(key, key)
+            st.sidebar.write(f"{display_name[:40]:40} : {price} L.E.")
     else:
         st.sidebar.error("No tests were extracted. Check the file format.")
         with open(PRICE_FILE, "r", encoding="utf-8") as f:
@@ -130,69 +144,52 @@ except FileNotFoundError:
     st.error(f"❌ File '{PRICE_FILE}' not found. Please ensure it is in the same directory as the app.")
     st.stop()
 
-# تهيئة حالة الجلسة
+# Initialize session state
 if "selected_tests" not in st.session_state:
-    st.session_state.selected_tests = []
+    st.session_state.selected_tests = []          # list of (original_name, price)
 if "discount_percent" not in st.session_state:
     st.session_state.discount_percent = 0.0
 if "matches_list" not in st.session_state:
-    st.session_state.matches_list = []          # لتخزين نتائج البحث
-if "last_choice" not in st.session_state:
-    st.session_state.last_choice = None         # لتتبع آخر اختيار من القائمة
+    st.session_state.matches_list = []            # list of (original_name, price)
 
 # ---- Add test section ----
 st.subheader("➕ Add a test")
 col1, col2 = st.columns([3, 1])
 with col1:
-    search_term = st.text_input("Enter test name (or part of it)", placeholder="e.g., ft4, cbc, ferritin")
+    search_term = st.text_input("Enter test name (or part of it)", placeholder="e.g., ft4, cbc, ferritin", key="search_input")
 with col2:
-    add_button = st.button("Add Test")
+    add_button = st.button("Search Tests")
 
-# معالجة زر البحث
+# Process search button
 if add_button and search_term:
-    key = search_term.lower()
-    # تطابق تام
-    if key in price_dict:
-        st.session_state.selected_tests.append((key, price_dict[key]))
-        st.success(f"Added: {key.title()} – {price_dict[key]} L.E.")
-        st.rerun()
+    matches = find_tests(search_term, price_dict, original_names)
+    if not matches:
+        st.warning("No tests found matching your query.")
+        st.session_state.matches_list = []        # clear any previous list
     else:
-        matches = find_tests(search_term, price_dict)
-        if not matches:
-            st.warning("No tests found.")
-            st.session_state.matches_list = []
-        elif len(matches) == 1:
-            name, price = matches[0]
-            st.session_state.selected_tests.append((name, price))
-            st.success(f"Added: {name.title()} – {price} L.E.")
-            st.rerun()
-        else:
-            # حفظ المطابقات وعرض القائمة المنسدلة
-            st.session_state.matches_list = matches
-            st.session_state.last_choice = None   # إعادة تعيين لتجنب إضافة تلقائية خاطئة
-            st.rerun()
+        st.session_state.matches_list = matches   # store matches, will show dropdown
+        st.rerun()                                 # rerun to display the selection interface
 
-# عرض القائمة المنسدلة إذا كانت هناك مطابقات
+# ---- Show selection dropdown when matches are available ----
 if st.session_state.matches_list:
     matches = st.session_state.matches_list
-    options = [f"{name.title()} – {price} L.E." for name, price in matches]
-    
-    # إنشاء selectbox بمفتاح ثابت لتتبع التغيير
-    selected = st.selectbox(
-        "Choose a test to add:",
+    # Build display strings for each match
+    options = [f"{name}  –  {price} L.E." for name, price in matches]
+
+    # create a temporary key for the selectbox to avoid interference
+    selected_option = st.selectbox(
+        "Choose the exact test you want to add:",
         options,
-        key="test_selector"
+        key="test_choice"
     )
-    
-    # إذا تغيرت القيمة عن آخر اختيار مخزن، نقوم بالإضافة
-    if selected != st.session_state.last_choice:
-        st.session_state.last_choice = selected
-        idx = options.index(selected)
+
+    # "Add chosen test" button (must be separate from the main search button)
+    if st.button("✅ Add selected test"):
+        idx = options.index(selected_option)
         name, price = matches[idx]
         st.session_state.selected_tests.append((name, price))
-        st.success(f"Added: {name.title()} – {price} L.E.")
-        # إخفاء القائمة المنسدلة بعد الإضافة
-        st.session_state.matches_list = []
+        st.success(f"Added: {name} – {price} L.E.")
+        st.session_state.matches_list = []   # hide the dropdown after adding
         st.rerun()
 
 # ---- Invoice display with discount ----
@@ -209,7 +206,8 @@ else:
         max_value=100.0,
         value=st.session_state.discount_percent,
         step=1.0,
-        format="%.0f"
+        format="%.0f",
+        key="discount_input"
     )
     if discount != st.session_state.discount_percent:
         st.session_state.discount_percent = discount
@@ -218,9 +216,8 @@ else:
     discount_amount = total * st.session_state.discount_percent / 100
     final_total = total - discount_amount
 
-    data = []
-    for name, price in st.session_state.selected_tests:
-        data.append({"Test": name.title(), "Price (L.E.)": price})
+    # Build table with original names
+    data = [{"Test": name, "Price (L.E.)": price} for name, price in st.session_state.selected_tests]
     df = pd.DataFrame(data)
     st.table(df)
 
@@ -238,15 +235,20 @@ else:
             st.session_state.discount_percent = 0.0
             st.rerun()
     with col_download:
-        if st.button("📄 Download PDF Invoice"):
-            pdf_bytes = generate_pdf_invoice(
-                st.session_state.selected_tests,
-                total,
-                st.session_state.discount_percent
-            )
-            st.download_button(
-                label="Click to download",
-                data=pdf_bytes,
-                file_name="orange_lab_invoice.pdf",
-                mime="application/pdf"
-            )
+        if st.button("📄 Prepare PDF"):
+            # we'll keep this button to show the download button
+            st.session_state.show_download = True
+
+    if st.session_state.get("show_download"):
+        pdf_bytes = generate_pdf_invoice(
+            st.session_state.selected_tests,
+            total,
+            st.session_state.discount_percent
+        )
+        st.download_button(
+            label="⬇️ Click to download PDF",
+            data=pdf_bytes,
+            file_name="orange_lab_invoice.pdf",
+            mime="application/pdf",
+            key="pdf_download_button"
+        )
