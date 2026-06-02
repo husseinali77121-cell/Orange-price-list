@@ -1,8 +1,8 @@
 
-         Printed In  28-Mar-2026
+         Printed In  02-Jun-2026
         Current Page  1  from  18
 
-                                                                   ÞÇÆãÉ ÃÓÚÇÑ ÇáÊÍÇáíá ÇáÎÇÕÉ ÈÇáãÑÖì
+                                                                   قائمة أسعار التحاليل الخاصة بالمرضى
 
 
       Allergy Screen
@@ -699,11 +699,11 @@
                                                                           10  Days          2 ml . blood / Edta . refrigerated
          Quadruple markers                          7000  L.E.
                                                                            7  Days          2 ml serum, refrigerated
-         Respiratory Panel (bacterial               2500  L.E.
+         Respiratory Panel (bacterial               3000  L.E.
                                                                            3  Days          Nasal Swab or Nasopharyngeal Swab
-         Respiratory Panel (Viral only)             4800  L.E.
+         Respiratory Panel (Viral only)             5000  L.E.
                                                                            3  Days          Nasal Swab or Nasopharyngeal Swab
-         Respiratory Panel by PCR                   6000  L.E.
+         Respiratory Panel by PCR                   6500  L.E.
                                                                            3  Days          Nasal Swab or Nasopharyngeal Swab
          Thrombophilia gene Profile                 6500  L.E.
                                                                           10  Days          1.0 ml serum or plasma
@@ -745,7 +745,7 @@
                                                                            1  Days
          Eosin -5- maleimide binding test           1500  L.E.
                                                                           10  Days          3 ml Whole blood/EDTA
-         Fecal Immunochemical Test (FIT)             590  L.E.
+         Fecal Immunochemical Test (FIT)            1000  L.E.
                                                                            7  Days          Fresh stool
          Fibro test/Acti test                       4000  L.E.
                                                                            7  Days          5 ml fasting serum
@@ -825,6 +825,8 @@
                                                                            0  Days
          HOMA2-IR                                      0  L.E.
                                                                            0  Days
+         QUICKI                                        0  L.E.
+                                                                           0  Days
 
       Immunoglobulins
                                                        Price             Result date        Collection notes
@@ -846,9 +848,9 @@
                                                                            3  Days          3 ml serum
          Food print IgE (30 test)                   5500  L.E.
                                                                            3  Days          3 ml serum/refrigerated
-         Food print IgG (220 test)                 10500  L.E.
+         Food print IgG (220 test)                 12500  L.E.
                                                                           11  Days          3 ml serum/ refrigerated
-         Food print IgG (60 test)                   6500  L.E.
+         Food print IgG (60 test)                   8500  L.E.
                                                                           10  Days          3 ml serum/ refrigerated
          Haptoglobin                                 500  L.E.
                                                                            1  Days          2 ml serum, refrigerated
@@ -856,11 +858,11 @@
                                                                            1  Days          1.0 ml. Serum
          IgD (Immunoglobulin D)                     1200  L.E.
                                                                            1  Days          1.0 ml. Serum
+
+
+
          IgE (Total)                                 400  L.E.
                                                                            1  Days          1.0 ml. Serum
-
-
-
          IgG (Immunoglobulin G)                      350  L.E.
                                                                            1  Days          1.0 ml. Serum
          IgG Index CSF                              2000  L.E.
@@ -964,11 +966,11 @@
 
       Iron Profile
                                                        Price             Result date        Collection notes
+
+
+
          Ferritin                                    400  L.E.
                                                                            1  Days          2 ml serum, refrigerated
-
-
-
          Iron (Serum)                                320  L.E.
                                                                            1  Days          2 ml serum, refrigerated
          Serum Transferrin                          1400  L.E.
@@ -982,8 +984,8 @@
                                                        Price             Result date        Collection notes
          Albumin / creatinine ratio                  200  L.E.
                                                                            1  Days          24 hrs. Urine
-         Blood Urea Nitrogen (BUN)                   150  L.E.
-                                                                           1  Days          Calculation
+         BUN                                         120  L.E.
+                                                                           1  Days          2 ml serum, refrigerated
          Ca++                                        220  L.E.
                                                                            1  Days          2 ml serum, refrigerated,  avoid hemolysis
          Calcium (Total)                             200  L.E.
@@ -1073,11 +1075,11 @@
                                                                            0  Days           5 ml Whole blood / EDTA
          FMF by PCR                                 4000  L.E.
                                                                           10  Days          2.0 ml EDTA blood
+
+
+
          FMF Gene Mutation                          4000  L.E.
                                                                           10  Days          2.0 ml EDTA blood
-
-
-
          Fragile X chromosome by PCR                6000  L.E.
                                                                           20  Days          2.0 ml EDTA blood
          HBV - DNA (Qualitative) by PCR             2000  L.E.
@@ -1130,7 +1132,7 @@
                                                                            3  Days          5 ml blood in vacutainer separated & rapidly, avoid hemolysis
          HSV (II) DNA by PCR                        1200  L.E.
                                                                            3  Days          5 ml blood in vacutainer separated & rapidly, avoid hemolysis
-         Human Papilloma Virus (HPV)(28             2500  L.E.
+         Human Papilloma Virus (HPV)(28             3500  L.E.
                                                                            5  Days          Vaginal swab transport media
          Human Papilloma Virus 16 & 18              4000  L.E.
                                                                            5  Days          Vaginal swab transport media
@@ -1183,11 +1185,11 @@
                                                                           20  Days
          Insulin (120 Min.)                          400  L.E.
                                                                            1  Days          1.0 ml. Serum
+
+
+
          Insulin (180 Min.)                          400  L.E.
                                                                            1  Days          1.0 ml. Serum
-
-
-
          Insulin (30 Min.)                           400  L.E.
                                                                            1  Days          1.0 ml. Serum
          Insulin (60 Min.)                           400  L.E.
@@ -1291,11 +1293,11 @@
                                                                            1  Days          Fluid
          Bone marrow Biobsy                         2000  L.E.
                                                                           15  Days          Bone marrow Biobsy
+
+
+
          Bone marrow Film: Consultation              700  L.E.
-                                                                           0  Days          Bone marrow Film: Consultation
-
-
-
+                                                                         0  Days          Bone marrow Film: Consultation
          Borrelia Burgdorferi IgG Abs               1300  L.E.
                                                                         15  Days          2 ml serum, frozen
          Borrelia Burgdorferi IgM Abs               1300  L.E.
@@ -1400,11 +1402,11 @@
                                                                          0  Days          24 hrs. urine 10 ml 6 N. HCL, Avoid coffee, tea etc before
          Organic acid (qualiti)                        0  L.E.
                                                                         35  Days          2 ml serum, refrigerated
+
+
+
          Organic acid in urine                      3500  L.E.
-                                                                        22  Days          24 hrs. urine 10 ml 6 N. HCL
-
-
-
+                                                                          22  Days          24 hrs. urine 10 ml 6 N. HCL
          Osteocalcin Level                          1500  L.E.
                                                                           10  Days          2 ml serum, frozen
          Oxalate (urine)                            1500  L.E.
@@ -1442,7 +1444,7 @@
                                                                            8  Days          1.0 ml. Serum
          Urate in Urine                              550  L.E.
                                                                            0  Days          24 hrs. Urine
-         Urea Breath Test                           1850  L.E.
+         Urea Breath Test                           2100  L.E.
                                                                            3  Days          Special test
          Uric Acid (Urine)                           120  L.E.
                                                                            1  Days          24 hrs. Urine
@@ -1506,11 +1508,11 @@
                                                                           10  Days          2 ml serum, frozen
          Catecholamines free fraction               2500  L.E.
                                                                           10  Days          24 hrs. urine 10 ml 6 N. HCL
+
+
+
          Cortisol (AM)                               350  L.E.
                                                                            1  Days          1.0 ml. Serum (9 AM)
-
-
-
          Cortisol (PM)                               350  L.E.
                                                                            1  Days          1.0 ml. Serum (9 PM)
          Cortisol (random)                           350  L.E.
@@ -1521,7 +1523,7 @@
                                                                            1  Days          2 ml serum, refrigerated
          Cortisol level before Inj.                  350  L.E.
                                                                            1  Days          2 ml serum, refrigerated
-         Dopamine                                   2300  L.E.
+         Dopamine                                   4000  L.E.
                                                                           15  Days          Frozen EDTA fasting plasma
          Free metanephrine                          3500  L.E.
                                                                           10  Days          2 ml plasma EDTA
@@ -1615,11 +1617,11 @@
                                                                           20  Days          2.0 ml. heparinized plasma.
          Aluminium (Hair)                           2500  L.E.
                                                                           15  Days          5 gram of hair
+
+
+
          Aluminium (urine)                          6000  L.E.
                                                                           20  Days          Urine
-
-
-
          Arsenic (blood)                            5000  L.E.
                                                                           15  Days          Serum
          Arsenic (Hair)                             1500  L.E.
@@ -1664,7 +1666,7 @@
                                                                            1  Days
          Water Examination                          1500  L.E.
                                                                            7  Days          Water for Examinatin
-         Water Examination (chemical)                850  L.E.
+         Water Examination (chemical)               1000  L.E.
                                                                            7  Days          Water for Examination
          Zinc (blood)                                550  L.E.
                                                                            3  Days          1.0 ml. Serum
@@ -1723,13 +1725,13 @@
                                                                            6  Days          2 ml serum, frozen
          Pap Smear                                  1300  L.E.
                                                                            5  Days           swab or slides
-         Pathological Examination                   1700  L.E.
+         Pathological Examination                   2500  L.E.
                                                                            5  Days          Biobsy
+
+
+
          PSA (Free)                                  450  L.E.
                                                                            1  Days          1.0 ml. Serum
-
-
-
          PSA (Total)                                 300  L.E.
                                                                            1  Days          1.0 ml. Serum
          PSA Ratio                                   800  L.E.
@@ -1833,11 +1835,11 @@
                                                                            1  Days          Nasal Swab
          Viral PCR-RNA (Qualitative)                1700  L.E.
                                                                            1  Days          Nasal Swab
+
+
+
          Viral PCR-RNA (Qualitative)                1500  L.E.
                                                                            1  Days          swab
-
-
-
          Viral PCR-RNA (Urgently)                   2800  L.E.
                                                                            0  Days          Nasal Swab
 
@@ -1877,9 +1879,6 @@
                                                                           10  Days          1.0 ml. frozen serum protected from light
          Vitamin K                                  6000  L.E.
                                                                           12  Days          2 ml serum, frozen
-
-
-
 
 
 
