@@ -281,3 +281,12 @@ else:
             mime="application/pdf",
             key="pdf_download_button"
             )
+
+# ========================
+# 4. App Footer / Signature
+# ========================
+st.sidebar.markdown("---")
+st.sidebar.caption("Developed by Dr/Hussein Ali")
+
+st.markdown("---")
+st.markdown("<p style='text-align: center; color: #888888; font-size: 14px;'>Developed by Dr/Hussein Ali</p>", unsafe_allow_html=True)
