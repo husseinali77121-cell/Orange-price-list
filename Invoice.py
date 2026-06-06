@@ -9,6 +9,16 @@ import urllib.parse
 from datetime import date
 
 # ========================
+# Helper Function for PDF Safety
+# ========================
+def safe_pdf_text(text: str) -> str:
+    """تصفية النصوص لمنع انهيار الـ PDF عند إدخال حروف عربية أو رموز غير مدعومة في الخط الأساسي"""
+    if text is None:
+        return "N/A"
+    # تحويل النص لترميز latin-1 الآمن واستبدال الحروف غير المدعومة بعلامات استفهام لمنع الـ Exception
+    return str(text).encode('latin-1', errors='replace').decode('latin-1')
+
+# ========================
 # 1. Parse text price list
 # ========================
 
@@ -91,23 +101,29 @@ class ReceiptPDF(FPDF):
         self.cell(30, 4, "Scan for location", align="L")
 
     def patient_info(self, name: str, phone: str, doctor: str, invoice_date: str):
-        """إضافة بيانات المريض داخل الـ PDF"""
+        """إضافة بيانات المريض داخل الـ PDF بعد تنقيتها بشكل آمن"""
         self.set_font("Arial", "B", 10)
         self.cell(0, 7, "Patient Information", ln=True)
         self.set_font("Arial", "", 10)
         
         col_width = (self.w - 20) / 2
         
-        self.cell(col_width, 6, f"Name: {name if name else 'N/A'}")
-        self.cell(col_width, 6, f"Date: {invoice_date}", ln=True, align="R")
+        # حماية النصوص المكتوبة قبل تمريرها للخلايا
+        clean_name = safe_pdf_text(name if name else 'N/A')
+        clean_phone = safe_pdf_text(phone if phone else 'N/A')
+        clean_doctor = safe_pdf_text(doctor if doctor else 'N/A')
+        clean_date = safe_pdf_text(invoice_date)
         
-        self.cell(col_width, 6, f"Phone: {phone if phone else 'N/A'}")
-        self.cell(col_width, 6, f"Referring Dr: {doctor if doctor else 'N/A'}", ln=True, align="R")
+        self.cell(col_width, 6, f"Name: {clean_name}")
+        self.cell(col_width, 6, f"Date: {clean_date}", ln=True, align="R")
+        
+        self.cell(col_width, 6, f"Phone: {clean_phone}")
+        self.cell(col_width, 6, f"Referring Dr: {clean_doctor}", ln=True, align="R")
         
         self.ln(5)
 
     def receipt_body(self, tests: List[Tuple[str, int]], total: int, discount_value: float, discount_type: str):
-        """طباعة جدول التحاليل والأسعار والخصومات في الـ PDF"""
+        """طباعة جدول التحاليل والأسعار والخصومات في الـ PDF بأمان"""
         self.set_font("Arial", "", 12)
         self.set_fill_color(200, 200, 200)
         self.cell(100, 8, "Test", border=1, fill=True)
@@ -116,9 +132,10 @@ class ReceiptPDF(FPDF):
         
         self.set_font("Arial", "", 11)
         for name, price in tests:
+            clean_test_name = safe_pdf_text(name)
             x_before = self.get_x()
             y_before = self.get_y()
-            self.multi_cell(100, 7, name, border=1)
+            self.multi_cell(100, 7, clean_test_name, border=1)
             y_after = self.get_y()
             height = y_after - y_before
             
@@ -167,7 +184,7 @@ def generate_pdf_invoice(tests: List[Tuple[str, int]], total: int, discount_valu
     return buffer.getvalue()
 
 def generate_whatsapp_link(tests: List[Tuple[str, int]], total: int, discount_value: float, discount_type: str, p_name: str) -> str:
-    """إنشاء نص رسالة الواتساب المجهزة بالبيانات والأسعار"""
+    """إنشاء نص رسالة الواتساب المجهزة (تدعم الحروف العربية والانجليزية بدون مشاكل)"""
     discount_amount = total * discount_value / 100 if discount_type == "Percentage" else discount_value
     final_total = total - discount_amount
     
@@ -244,12 +261,13 @@ if "invoice_date" not in st.session_state: st.session_state.invoice_date = date.
 
 # ---- Patient Information Section ----
 st.subheader("👤 Patient Information")
+st.info("💡 نصيحة: يُفضل كتابة الأسماء باللغة الإنجليزية لتظهر منسقة وبشكل صحيح تماماً داخل ملف الـ PDF.")
 p_col1, p_col2 = st.columns(2)
 with p_col1:
-    st.session_state.patient_name = st.text_input("Patient Name", value=st.session_state.patient_name, placeholder="Optional")
+    st.session_state.patient_name = st.text_input("Patient Name", value=st.session_state.patient_name, placeholder="e.g., Ahmed Ali")
     st.session_state.patient_phone = st.text_input("Phone Number", value=st.session_state.patient_phone, placeholder="Optional")
 with p_col2:
-    st.session_state.patient_doctor = st.text_input("Referring Doctor", value=st.session_state.patient_doctor, placeholder="Optional")
+    st.session_state.patient_doctor = st.text_input("Referring Doctor", value=st.session_state.patient_doctor, placeholder="e.g., Dr. Sameh")
     st.session_state.invoice_date = st.date_input("Date", value=st.session_state.invoice_date)
     
 st.markdown("---")
@@ -294,29 +312,38 @@ st.subheader("📋 Current invoice")
 if not st.session_state.selected_tests:
     st.info("No tests added yet.")
 else:
-    # إنشاء الجدول لتمكين حذف العناصر بشكل تفاعلي ومستقر
-    df = pd.DataFrame(st.session_state.selected_tests, columns=["Test Name", "Price (L.E.)"])
+    # إنشاء وعرض جدول الفاتورة بشكل تفاعلي ومطابق للصورة تماماً مع زر الحذف المباشر
+    st.markdown("---")
+    h_col1, h_col2, h_col3 = st.columns([3, 1, 1])
+    with h_col1: st.markdown("**Test**")
+    with h_col2: st.markdown("**Price (L.E.)**")
+    with h_col3: st.markdown("**Remove**")
+    st.markdown("<hr style='margin: 5px 0 15px 0;'>", unsafe_allow_html=True)
     
-    edited_df = st.data_editor(
-        df, 
-        num_rows="dynamic", 
-        use_container_width=True, 
-        hide_index=True, 
-        column_config={
-            "Test Name": st.column_config.TextColumn(width="large", disabled=True),
-            "Price (L.E.)": st.column_config.NumberColumn(format="%d L.E.", disabled=True)
-        }
-    )
-    
-    # تحديث الـ Session State مباشرة عند قيام المستخدم بحذف أي صف
-    if len(edited_df) != len(df):
-        st.session_state.selected_tests = list(edited_df.itertuples(index=False, name=None))
+    # حلقة لعرض التحاليل وإعطاء كل صف زر حذف منفصل وتلقائي
+    idx_to_remove = None
+    for i, (name, price) in enumerate(st.session_state.selected_tests):
+        r_col1, r_col2, r_col3 = st.columns([3, 1, 1])
+        with r_col1:
+            st.write(name)
+        with r_col2:
+            st.write(f"{price:,} L.E.")
+        with r_col3:
+            # زر الحذف السريع على شكل علامة ❌ الحمراء لكل صف بشكل مستقل وبسيط
+            if st.button("❌", key=f"del_{i}", help="حذف هذا التحليل"):
+                idx_to_remove = i
+                
+    # تنفيذ عملية الحذف وإعادة تحديث الصفحة فوراً
+    if idx_to_remove is not None:
+        st.session_state.selected_tests.pop(idx_to_remove)
         st.rerun()
+        
+    st.markdown("---")
 
     # حساب الإجمالي المبدئي بعد أي عمليات حذف
     total = sum(price for _, price in st.session_state.selected_tests)
 
-    # قسم الخصم الذكي (تم حل مشكلة الـ format_v تماماً هنا)
+    # قسم الخصم الذكي والآمن من الأخطاء
     st.markdown("**Discount**")
     d_col1, d_col2 = st.columns([1, 2])
     with d_col1:
@@ -343,7 +370,7 @@ else:
             max_value=max_v,
             value=float(st.session_state.discount_value),
             step=step_v,
-            format="%.0f"  # تنسيق قياسي آمن يمنع الـ StreamlitInvalidNumberFormatError
+            format="%.0f"
         )
         
     if new_value != st.session_state.discount_value:
