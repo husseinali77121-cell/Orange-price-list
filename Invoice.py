@@ -143,7 +143,8 @@ def generate_pdf_invoice(tests: List[Tuple[str, int]], total: int, discount_perc
 st.set_page_config(page_title="Orange Lab - Medical Test Invoice", layout="wide")
 st.title("🧾 Orange Lab Invoice Generator")
 
-PRICE_FILE = "Diamond Price List 2026.txt"
+# تم تعديل اسم الملف هنا بناءً على طلبك
+PRICE_FILE = "Orange lab Price list 2026.txt"
 
 # Load price list with error handling
 try:
@@ -286,7 +287,9 @@ else:
 # 4. App Footer / Signature
 # ========================
 st.sidebar.markdown("---")
-st.sidebar.caption("Developed by Dr/Hussein Ali")
+# تعديل التوقيع في القائمة الجانبية بالبرتقالي العريض
+st.sidebar.markdown("<p style='text-align: center; font-weight: bold; color: #FF4B4B;'>Developed by Dr/Hussein Ali</p>", unsafe_allow_html=True)
 
 st.markdown("---")
-st.markdown("<p style='text-align: center; color: #888888; font-size: 14px;'>Developed by Dr/Hussein Ali</p>", unsafe_allow_html=True)
+# تعديل التوقيع الرئيسي أسفل الصفحة ليكون ملوناً، كبيراً، وواضحاً جداً
+st.markdown("<p style='text-align: center; color: #FF4B4B; font-size: 20px; font-weight: bold; letter-spacing: 1px;'>👨‍💻 Developed by Dr/Hussein Ali</p>", unsafe_allow_html=True)
