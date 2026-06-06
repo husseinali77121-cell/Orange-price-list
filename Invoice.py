@@ -91,7 +91,7 @@ class ReceiptPDF(FPDF):
         self.cell(30, 4, "Scan for location", align="L")
 
     def patient_info(self, name: str, phone: str, doctor: str, invoice_date: str):
-        """إضافة بيانات المريض إلى ملف الـ PDF"""
+        """إضافة بيانات المريض داخل الـ PDF"""
         self.set_font("Arial", "B", 10)
         self.cell(0, 7, "Patient Information", ln=True)
         self.set_font("Arial", "", 10)
@@ -107,7 +107,7 @@ class ReceiptPDF(FPDF):
         self.ln(5)
 
     def receipt_body(self, tests: List[Tuple[str, int]], total: int, discount_value: float, discount_type: str):
-        """طباعة جدول التحاليل والخصومات الإجمالية في الـ PDF"""
+        """طباعة جدول التحاليل والأسعار والخصومات في الـ PDF"""
         self.set_font("Arial", "", 12)
         self.set_fill_color(200, 200, 200)
         self.cell(100, 8, "Test", border=1, fill=True)
@@ -167,7 +167,7 @@ def generate_pdf_invoice(tests: List[Tuple[str, int]], total: int, discount_valu
     return buffer.getvalue()
 
 def generate_whatsapp_link(tests: List[Tuple[str, int]], total: int, discount_value: float, discount_type: str, p_name: str) -> str:
-    """إنشاء رسالة واتساب منسقة ومجهزة للفاتورة الحالية"""
+    """إنشاء نص رسالة الواتساب المجهزة بالبيانات والأسعار"""
     discount_amount = total * discount_value / 100 if discount_type == "Percentage" else discount_value
     final_total = total - discount_amount
     
@@ -294,20 +294,9 @@ st.subheader("📋 Current invoice")
 if not st.session_state.selected_tests:
     st.info("No tests added yet.")
 else:
-    # عرض الجدول مع تفعيل ميزة حذف الصفوف بشكل مرن
-    invoice_data = []
-    total = 0
-    for i, (name, price) in enumerate(st.session_state.selected_tests):
-        total += price
-        invoice_data.append({
-            "index": i,
-            "Test Name": name,
-            "Price (L.E.)": price
-        })
-        
-    df = pd.DataFrame(invoice_data).set_index('index')
+    # إنشاء الجدول لتمكين حذف العناصر بشكل تفاعلي ومستقر
+    df = pd.DataFrame(st.session_state.selected_tests, columns=["Test Name", "Price (L.E.)"])
     
-    # محرر البيانات التفاعلي يسمح بحذف أي فحص مباشرة بالضغط على الصف وضغط زر Delete أو أيقونة الحذف
     edited_df = st.data_editor(
         df, 
         num_rows="dynamic", 
@@ -319,14 +308,15 @@ else:
         }
     )
     
-    # التحقق إذا قام موظف الاستقبال بحذف فحص معين
-    if len(edited_df) < len(df):
-        remaining_indices = edited_df.index.tolist()
-        new_tests = [st.session_state.selected_tests[i] for i in remaining_indices]
-        st.session_state.selected_tests = new_tests
+    # تحديث الـ Session State مباشرة عند قيام المستخدم بحذف أي صف
+    if len(edited_df) != len(df):
+        st.session_state.selected_tests = list(edited_df.itertuples(index=False, name=None))
         st.rerun()
 
-    # قسم الخصم (نسبة مئوية أو قيمة ثابتة)
+    # حساب الإجمالي المبدئي بعد أي عمليات حذف
+    total = sum(price for _, price in st.session_state.selected_tests)
+
+    # قسم الخصم الذكي (تم حل مشكلة الـ format_v تماماً هنا)
     st.markdown("**Discount**")
     d_col1, d_col2 = st.columns([1, 2])
     with d_col1:
@@ -340,7 +330,7 @@ else:
     with d_col2:
         max_v = 100.0 if new_type == "Percentage" else float(total)
         step_v = 1.0 if new_type == "Percentage" else 10.0
-        format_v = "%.0f%%" if new_type == "Percentage" else "%d L.E."
+        label_text = "Discount (%)" if new_type == "Percentage" else "Discount (L.E.)"
         
         if new_type != st.session_state.discount_type:
             st.session_state.discount_value = 0.0
@@ -348,20 +338,19 @@ else:
             st.rerun()
             
         new_value = st.number_input(
-            "Amount",
+            label_text,
             min_value=0.0,
             max_value=max_v,
-            value=st.session_state.discount_value,
+            value=float(st.session_state.discount_value),
             step=step_v,
-            format=format_v,
-            label_visibility="collapsed"
+            format="%.0f"  # تنسيق قياسي آمن يمنع الـ StreamlitInvalidNumberFormatError
         )
         
     if new_value != st.session_state.discount_value:
         st.session_state.discount_value = new_value
         st.rerun()
 
-    # حسابات الإجمالي النهائي بعد الخصم
+    # حسابات الخصم النهائية
     discount_amount = total * st.session_state.discount_value / 100 if st.session_state.discount_type == "Percentage" else st.session_state.discount_value
     final_total = total - discount_amount
 
@@ -377,7 +366,7 @@ else:
 
     st.markdown("---")
     
-    # أزرار الإجراءات (تفريغ، إنشاء PDF، إرسال واتساب)
+    # أزرار التحكم والإرسال والطباعة
     col_clear, col_download, col_whatsapp = st.columns(3)
     with col_clear:
         if st.button("🗑️ Clear invoice", use_container_width=True):
