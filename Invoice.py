@@ -207,33 +207,15 @@ def generate_whatsapp_link(tests: List[Tuple[str, int]], total: int, discount_va
             message += f"Discount: -{discount_amount:,.0f} L.E.\n"
             
     message += f"*Total = {final_total:,.0f} L.E.*"
-    return message
+    
+    encoded_message = urllib.parse.quote(message)
+    return f"https://wa.me/?text={encoded_message}"
 
 # ========================
 # 3. Streamlit UI
 # ========================
 
 st.set_page_config(page_title="Orange Lab - Medical Test Invoice", layout="wide")
-
-# كود CSS مخصص لمنع الحقول من الهبوط لسطر جديد في الشاشات الصغيرة وضمان بقائها في سطر واحد دائماً
-st.markdown("""
-    <style>
-    @media (max-width: 768px) {
-        div[data-testid="stHorizontalBlock"] {
-            display: flex !important;
-            flex-direction: row !important;
-            flex-wrap: nowrap !important;
-            align-items: center !important;
-            width: 100% !important;
-        }
-        div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {
-            width: auto !important;
-            flex: 1 !important;
-        }
-    }
-    </style>
-""", unsafe_allow_html=True)
-
 st.title("🧾 Orange Lab Invoice Generator")
 
 PRICE_FILE = "Orange lab Price list 2026.txt"
@@ -330,23 +312,24 @@ st.subheader("📋 Current invoice")
 if not st.session_state.selected_tests:
     st.info("No tests added yet.")
 else:
-    # إنشاء وعرض جدول الفاتورة بشكل تفاعلي في سطر واحد تماماً
+    # إنشاء وعرض جدول الفاتورة بشكل تفاعلي ومطابق للصورة تماماً مع زر الحذف المباشر
     st.markdown("---")
-    h_col1, h_col2, h_col3 = st.columns([5, 2, 1])
+    h_col1, h_col2, h_col3 = st.columns([3, 1, 1])
     with h_col1: st.markdown("**Test**")
     with h_col2: st.markdown("**Price (L.E.)**")
     with h_col3: st.markdown("**Remove**")
     st.markdown("<hr style='margin: 5px 0 15px 0;'>", unsafe_allow_html=True)
     
-    # حلقة لعرض التحاليل في سطر واحد ثابت ومقاوم للتمدد
+    # حلقة لعرض التحاليل وإعطاء كل صف زر حذف منفصل وتلقائي
     idx_to_remove = None
     for i, (name, price) in enumerate(st.session_state.selected_tests):
-        r_col1, r_col2, r_col3 = st.columns([5, 2, 1])
+        r_col1, r_col2, r_col3 = st.columns([3, 1, 1])
         with r_col1:
             st.write(name)
         with r_col2:
             st.write(f"{price:,} L.E.")
         with r_col3:
+            # زر الحذف السريع على شكل علامة ❌ الحمراء لكل صف بشكل مستقل وبسيط
             if st.button("❌", key=f"del_{i}", help="حذف هذا التحليل"):
                 idx_to_remove = i
                 
@@ -410,17 +393,8 @@ else:
 
     st.markdown("---")
     
-    # تحضير وتجهيز نص الرسالة الموحد
-    invoice_msg_text = generate_whatsapp_link(
-        st.session_state.selected_tests,
-        total,
-        st.session_state.discount_value,
-        st.session_state.discount_type,
-        st.session_state.patient_name
-    )
-    
-    # تقسيم أزرار التحكم بالتساوي لتشمل خيار الماسنجر الجديد
-    col_clear, col_download, col_whatsapp, col_messenger = st.columns(4)
+    # أزرار التحكم والإرسال والطباعة
+    col_clear, col_download, col_whatsapp = st.columns(3)
     with col_clear:
         if st.button("🗑️ Clear invoice", use_container_width=True):
             st.session_state.selected_tests.clear()
@@ -438,20 +412,14 @@ else:
             st.rerun()
             
     with col_whatsapp:
-        encoded_message = urllib.parse.quote(invoice_msg_text)
-        wa_link = f"https://wa.me/?text={encoded_message}"
-        st.markdown(f'<a href="{wa_link}" target="_blank" style="text-decoration:none;"><button style="width:100%; height:38px; background-color:#25D366; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:500;">📲 WhatsApp</button></a>', unsafe_allow_html=True)
-
-    with col_messenger:
-        # زر مخصص لماسنجر يعتمد على نسخ النص تلقائياً بضغطة واحدة لتسهيل اللصق المباشر للمستخدم
-        escaped_msg = invoice_msg_text.replace("`", "\\`").replace("$", "\\$").replace("\n", "\\n")
-        messenger_button_html = f"""
-        <button onclick="navigator.clipboard.writeText(`{escaped_msg}`); alert('📋 تم نسخ بيانات الفاتورة بنجاح! يمكنك الآن الذهاب لماسنجر ولصق الرسالة مباشرة للعميل.');" 
-        style="width:100%; height:38px; background-color:#0084FF; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:500;">
-            💬 Messenger
-        </button>
-        """
-        st.markdown(messenger_button_html, unsafe_allow_html=True)
+        wa_link = generate_whatsapp_link(
+            st.session_state.selected_tests,
+            total,
+            st.session_state.discount_value,
+            st.session_state.discount_type,
+            st.session_state.patient_name
+        )
+        st.markdown(f'<a href="{wa_link}" target="_blank" style="text-decoration:none;"><button style="width:100%; height:38px; background-color:#25D366; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:500;">📲 Send to WhatsApp</button></a>', unsafe_allow_html=True)
 
     if st.session_state.show_download:
         pdf_bytes = generate_pdf_invoice(
