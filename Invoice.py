@@ -1,4 +1,16 @@
 import streamlit as st
+
+st.set_page_config(page_title="...")
+
+# إخفاء GitHub وعناصر Streamlit
+st.markdown("""
+    <style>
+    .stActionButton {display: none !important;}
+    #MainMenu {visibility: hidden !important;}
+    footer {visibility: hidden !important;}
+    header[data-testid="stHeader"] {display: none !important;}
+    </style>
+""", unsafe_allow_html=True)
 import re
 from typing import Dict, List, Tuple
 from fpdf import FPDF
