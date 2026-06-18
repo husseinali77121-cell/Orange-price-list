@@ -28,15 +28,15 @@ from datetime import date
 QUICK_PANELS = {
     "🩸 CBC": ["CBC"],
     "🍬 HbA1c": ["HbA1c"],
-    "🫀 Liver (ALT + AST)": ["ALT", "AST"],
-    "🫘 Kidney (Urea + Creat + Uric)": ["Urea", "Creatinine", "Uric Acid"],
-    "🦋 Thyroid Profile": ["Thyroid Profile"],
+    "🫀 Liver (ALT + AST)": ["ALT (SGPT)", "AST (SGOT)"],
+    "🫘 Kidney (Urea + Creat + Uric)": ["Urea", "Creatinine (Serum)", "Uric Acid"],
+    "🦋 Thyroid Profile": ["Thyroid profie"],
     "🦋 TSH Only": ["TSH"],
     "💉 Lipid Profile": ["Lipid Profile"],
     "☀️ Vitamin D3": ["Vitamin D3"],
-    "🔩 Iron + Ferritin": ["Serum Iron", "Ferritin"],
+    "🔩 Iron + Ferritin": ["Iron", "Ferritin"],
     "🩹 Coagulation (PT + PTT)": ["PT", "PTT"],
-    "📋 Full Routine": ["CBC", "HbA1c", "ALT", "AST", "Urea", "Creatinine", "Uric Acid", "TSH", "Lipid Profile"],
+    "📋 Full Routine": ["CBC", "HbA1c", "ALT (SGPT)", "AST (SGOT)", "Urea", "Creatinine (Serum)", "Uric Acid", "TSH", "Lipid Profile"],
 }
 
 # ========================
