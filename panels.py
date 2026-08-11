@@ -27,6 +27,15 @@ QUICK_PANELS = {
     "🔥 CRP + ESR": {"tests": ["CRP", "ESR"]},
     "🤰 Pregnancy (Serum)": {"tests": ["Pregnancy in serum Qualit."]},
 
+    # ---- مفرّق سريع (طلبات الاستقبال المتكررة) ----
+    "🫀 ALT + AST": {"tests": ["ALT (SGPT)", "AST (SGOT)"]},
+    "🫘 Urea + Creat": {"tests": ["Urea", "Creatinine (Serum)"]},
+    "💎 Uric Acid": {"tests": ["Uric Acid"]},
+    "🍬 HbA1c only": {"tests": ["HbA1C"]},
+    "🦠 HBs + HCV + HIV": {
+        "tests": ["HBs Ag", "HCV IgG", "HIV (I,II) Abs"],
+    },
+
     # ---- بروفايلات ليها سعر باقة ----
     "🫀 Liver Profile": {
         "bundle": "Liver Profile",
@@ -54,7 +63,7 @@ QUICK_PANELS = {
     "🍬 Diabetes (FBG+PPBG+A1c)": {"tests": ["FBG", "PPBG", "HbA1C"]},
     "🦋 TSH Only": {"tests": ["TSH"]},
     "🔩 Anemia Workup": {"tests": ["CBC", "Ferritin", "Iron (Serum)", "TIBC"]},
-    "🩹 Coagulation (PT+PTT)": {"tests": ["PT", "PTT"]},
+    "🩹 PT + PTT": {"tests": ["PT", "PTT"]},
     "❤️ Cardiac": {"tests": ["Troponin (I)", "CK (MB)", "LDH"]},
 
     # ---- فيتامينات ----

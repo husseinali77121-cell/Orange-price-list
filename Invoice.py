@@ -21,7 +21,19 @@ st.markdown("""
 #MainMenu, footer {visibility:hidden !important;}
 header[data-testid="stHeader"] {display:none !important;}
 div[data-testid="stVerticalBlock"] {gap:.55rem;}
-.stButton>button {font-size:.86rem; padding:.35rem .4rem;}
+.stButton>button {
+  font-size:.82rem; padding:.32rem .35rem;
+  white-space:normal; line-height:1.18; min-height:2.5rem;
+}
+
+/* الموبايل: أي صف فيه أزرار يفضل جنب بعض بدل ما يتفرد سطر لكل زرار */
+div[data-testid="stHorizontalBlock"]:has(div[data-testid="stButton"]) {
+  flex-wrap:nowrap !important; gap:.4rem !important;
+}
+div[data-testid="stHorizontalBlock"]:has(div[data-testid="stButton"]) > div[data-testid="column"],
+div[data-testid="stHorizontalBlock"]:has(div[data-testid="stButton"]) > div[data-testid="stColumn"] {
+  min-width:0 !important; flex:1 1 0 !important;
+}
 .ok-badge   {color:#0a7d33; font-weight:600;}
 .bad-badge  {color:#c62828; font-weight:600;}
 .warn-badge {color:#b26a00; font-weight:600;}
@@ -137,9 +149,50 @@ def replace_with_bundle(rec, names, source="manual"):
                                  if norm(i["name"]) not in drop]
     add_record(rec, source)
 
+def add_panel_tests(names, source):
+    """
+    إضافة تحاليل panel مع حماية الدفع مرتين.
 
-# ------------------------------------------------------------
-# Sidebar
+    التحاليل هنا مفرّقة دايماً (مش باقات)، فالتعارض الوحيد الممكن هو
+    "covered" — يعني التحليل داخل في باقة موجودة بالفعل في الفاتورة.
+    دي حالة محسومة مش محتاجة قرار: العميل دفع تمنه، فبنتخطاه ونبلّغ.
+    لو الموظف عايزه بالفعل (نادر) يضيفه من خانة البحث — هناك البوابة
+    بتديله خيار "أضفه برضه (مقصود)".
+
+    بترجّع: (added, dup, covered)
+    """
+    added, dup, covered = [], [], []
+    for t in names:
+        r = resolve_test(t, IDX)
+        if not r.is_confident:
+            continue
+        rec = r.best
+        if has_test(rec.name):
+            dup.append(rec.name)
+            continue
+        c = check_add(st.session_state["items"], rec, IDX)
+        if c and c.kind == "covered":
+            covered.append((rec.name, c.bundle, rec.price))
+            continue
+        add_record(rec, source)
+        added.append(rec.name)
+    return added, dup, covered
+
+
+def flash_panel_result(p, added, dup, covered):
+    if added:
+        flash("success", f"تمت إضافة {len(added)} تحليل من {p}")
+    if dup:
+        flash("warning", f"موجودين قبل كده: {', '.join(dup)}")
+    if covered:
+        saved = sum(pr for _, _, pr in covered)
+        bundle = covered[0][1]
+        flash("warning",
+              f"⛔ اتخطّى {', '.join(n for n, _, _ in covered)} — "
+              f"داخلين في باقة {bundle} الموجودة في الفاتورة. "
+              f"وفّرت على العميل {saved:,} {CURRENCY}")
+
+
 # ------------------------------------------------------------
 
 with st.sidebar:
@@ -235,30 +288,25 @@ st.divider()
 
 st.markdown("#### ⚡ الإدخال السريع")
 
+PANEL_COLS = 2                      # اتنين في السطر - أوفر في المساحة على الموبايل
 panel_names = [p for p in QUICK_PANELS if p not in BROKEN_PANELS]
-cols = st.columns(3)
-for i, p in enumerate(panel_names):
-    with cols[i % 3]:
-        if st.button(p, use_container_width=True, key=f"pnl_{i}"):
-            bname = panel_bundle_name(p, st.session_state.branch)
-            brec = resolve_test(bname, IDX).best if bname else None
-            itemized = sum(resolve_test(t, IDX).best.price
-                           for t in QUICK_PANELS[p]["tests"])
-            if brec and st.session_state.prefer_bundle and brec.price <= itemized:
-                st.session_state.pending_panel = p
-            else:
-                added, dup = [], []
-                for t in QUICK_PANELS[p]["tests"]:
-                    r = resolve_test(t, IDX)
-                    if r.is_confident and add_record(r.best, source=p):
-                        added.append(r.best.name)
-                    else:
-                        dup.append(t)
-                if added:
-                    flash("success", f"تمت إضافة {len(added)} تحليل من {p}")
-                if dup:
-                    flash("warning", f"موجودين قبل كده: {', '.join(dup)}")
-            st.rerun()
+for row in range(0, len(panel_names), PANEL_COLS):
+    cols = st.columns(PANEL_COLS)
+    for j, p in enumerate(panel_names[row:row + PANEL_COLS]):
+        i = row + j
+        with cols[j]:
+            if st.button(p, use_container_width=True, key=f"pnl_{i}"):
+                bname = panel_bundle_name(p, st.session_state.branch)
+                brec = resolve_test(bname, IDX).best if bname else None
+                itemized = sum(resolve_test(t, IDX).best.price
+                               for t in QUICK_PANELS[p]["tests"])
+                if brec and st.session_state.prefer_bundle and brec.price <= itemized:
+                    st.session_state.pending_panel = p
+                else:
+                    added, dup, covered = add_panel_tests(
+                        QUICK_PANELS[p]["tests"], p)
+                    flash_panel_result(p, added, dup, covered)
+                st.rerun()
 
 # اختيار باقة أو مفرّق
 if st.session_state.pending_panel:
@@ -271,19 +319,18 @@ if st.session_state.pending_panel:
         lbl = (f"📦 باقة: {brec.price:,} {CURRENCY}"
                + (f"  (توفير {saving:,})" if saving > 0 else ""))
         if st.button(lbl, use_container_width=True, type="primary"):
-            add_record(brec, source=p)
+            res = try_add(brec, source=p)
             st.session_state.pending_panel = None
-            flash("success", f"تمت إضافة باقة {brec.name}")
+            if res == "added":
+                flash("success", f"تمت إضافة باقة {brec.name}")
+            elif res == "duplicate":
+                flash("warning", f"باقة {brec.name} موجودة بالفعل")
             st.rerun()
     with b2:
         if st.button(f"🔬 مفرّق: {itemized:,} {CURRENCY}", use_container_width=True):
-            n = 0
-            for t in QUICK_PANELS[p]["tests"]:
-                r = resolve_test(t, IDX)
-                if r.is_confident and add_record(r.best, source=p):
-                    n += 1
+            added, dup, covered = add_panel_tests(QUICK_PANELS[p]["tests"], p)
             st.session_state.pending_panel = None
-            flash("success", f"تمت إضافة {n} تحليل مفرّق")
+            flash_panel_result(p, added, dup, covered)
             st.rerun()
     with b3:
         if st.button("إلغاء", use_container_width=True):
