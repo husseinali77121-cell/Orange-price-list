@@ -8,6 +8,8 @@ from typing import List
 
 from fpdf import FPDF
 
+from arabic_pdf import find_font, has_arabic, to_pdf_text
+
 try:
     import qrcode
     HAS_QR = True
@@ -15,16 +17,54 @@ except ImportError:
     HAS_QR = False
 
 
+# اسم العائلة المستخدم في الـ PDF: يونيكود لو لقينا خط، وإلا Helvetica
+UNI_FONT = "OLUni"
+_FONT_PATH = find_font()
+_FONT_PATH_B = find_font(bold=True)
+
+
+def unicode_ready() -> bool:
+    """هل الـ PDF يقدر يكتب عربي؟"""
+    return _FONT_PATH is not None
+
+
 def _safe(t) -> str:
+    """
+    تجهيز النص للطباعة.
+    مع خط يونيكود: العربي بيتوصّل ويتقلب صح.
+    من غيره: بيرجع للسلوك القديم (latin-1) عشان مايكسرش.
+    """
     if t is None:
         return "N/A"
-    return str(t).encode("latin-1", errors="replace").decode("latin-1")
+    t = str(t)
+    if unicode_ready():
+        return to_pdf_text(t)
+    return t.encode("latin-1", errors="replace").decode("latin-1")
 
 
 class ReceiptPDF(FPDF):
     def __init__(self, maps_url: str = ""):
         super().__init__()
+        self.uni = False
+        if unicode_ready():
+            try:
+                self.add_font(UNI_FONT, "", _FONT_PATH)
+                self.add_font(UNI_FONT, "B", _FONT_PATH_B or _FONT_PATH)
+                self.add_font(UNI_FONT, "I", _FONT_PATH)
+                self.uni = True
+            except Exception:
+                self.uni = False
         self.qr_bytes = None
+
+    def set_font(self, family=None, style="", size=0):
+        """
+        أي نداء لـ Helvetica بيتحوّل للخط اليونيكود لو متاح -
+        فمفيش سطر واحد في الفاتورة محتاج يتغيّر.
+        """
+        if self.uni and (family or "").lower() in ("helvetica", "arial", ""):
+            family = UNI_FONT
+            style = style.replace("I", "")     # مفيش مائل في الخط ده
+        return super().set_font(family, style, size)
         if HAS_QR and maps_url:
             buf = BytesIO()
             qrcode.make(maps_url).save(buf, format="PNG")
@@ -58,10 +98,11 @@ class ReceiptPDF(FPDF):
         self.line(10, self.get_y(), self.w - 10, self.get_y())
         self.ln(2)
         self.set_font("Helvetica", "", 10)
-        self.cell(w, 6, _safe(f"Name: {name}"))
+        self.cell(w, 6, "Name: " + _safe(name))
         self.cell(w, 6, _safe(f"Date: {inv_date}"), ln=True, align="R")
         self.cell(w, 6, _safe(f"Phone: {'+' + phone if phone else 'N/A'}"))
-        self.cell(w, 6, _safe(f"Referring Dr: {doctor or 'N/A'}"), ln=True, align="R")
+        self.cell(w, 6, "Referring Dr: " + _safe(doctor or "N/A"),
+                  ln=True, align="R")
         self.ln(5)
 
     def body(self, items: List[dict], totals: dict):

@@ -171,6 +171,49 @@ ALIASES: Dict[str, str] = {
     "ck mb": "CK (MB)",
     "pregnancy": "Pregnancy in serum Qualit.",
     "bhcg": "Pregnancy in serum Qualit.",
+
+    # ---- عربي: المصطلحات الدارجة اللي العملاء بيكتبوها ----
+    # (بتخدم اللصق والبحث العربي مع بعض)
+    "صوره دم": "CBC", "صورة دم": "CBC",
+    "صوره دم كامله": "CBC", "صورة دم كاملة": "CBC",
+    "سي بي سي": "CBC", "تحليل دم": "CBC",
+    "سكر صايم": "FBG", "سكر صائم": "FBG", "صايم": "FBG", "صائم": "FBG",
+    "سكر صيامي": "FBG", "جلوكوز صايم": "FBG",
+    "سكر فاطر": "PPBG", "سكر بعد الاكل": "PPBG", "بعد الاكل": "PPBG",
+    "سكر عشوائي": "RBG", "سكر راندوم": "RBG",
+    "تراكمي": "HbA1C", "سكر تراكمي": "HbA1C", "هيموجلوبين سكري": "HbA1C",
+    "كرياتينين": "Creatinine (Serum)", "كيرياتينين": "Creatinine (Serum)",
+    "يوريا": "Urea", "بولينا": "Urea",
+    "حمض يوريك": "Uric Acid", "حمض بوليك": "Uric Acid",
+    "يوريك اسيد": "Uric Acid", "حمض البوليك": "Uric Acid",
+    "فيتامين د": "Vitamin D3(25 Hydroxy Cholecal.)",
+    "فيتامين دال": "Vitamin D3(25 Hydroxy Cholecal.)",
+    "فيتامين د3": "Vitamin D3(25 Hydroxy Cholecal.)",
+    "فيتامين ب12": "Vitamin B12", "ب12": "Vitamin B12",
+    "حديد": "Iron (Serum)", "الحديد": "Iron (Serum)",
+    "فيريتين": "Ferritin", "مخزون الحديد": "Ferritin", "فريتين": "Ferritin",
+    "هيموجلوبين": "Hb (hemoglobin)", "هيموغلوبين": "Hb (hemoglobin)",
+    "سرعه الترسيب": "ESR", "سرعة الترسيب": "ESR", "ترسيب": "ESR",
+    "فصيله الدم": "ABO", "فصيلة الدم": "ABO", "فصيله": "ABO", "فصيلة": "ABO",
+    "تحليل بول": "Urine Examination", "بول": "Urine Examination",
+    "تحليل براز": "Stool Examination", "براز": "Stool Examination",
+    "مزرعه بول": "Urine Culture", "مزرعة بول": "Urine Culture",
+    "مزرعه براز": "Stool Culture", "مزرعة براز": "Stool Culture",
+    "سائل منوي": "Semen Examination", "تحليل منوي": "Semen Examination",
+    "حمل": "Pregnancy in serum Qualit.", "تحليل حمل": "Pregnancy in serum Qualit.",
+    "كالسيوم": "Calcium (Total)", "كالسيوم كلي": "Calcium (Total)",
+    "صوديوم": "Na (Sodium)", "بوتاسيوم": "K (Potassium)",
+    "ماغنسيوم": "Magnesium (Mg) serum", "مغنسيوم": "Magnesium (Mg) serum",
+    "فوسفور": "PO4 (Phosphorus)",
+    "كوليسترول": "Cholesterol", "كولسترول": "Cholesterol",
+    "دهون ثلاثيه": "Triglycerides", "دهون ثلاثية": "Triglycerides",
+    "تراي جليسيريد": "Triglycerides",
+    "الغده الدرقيه": "Thyroid Profile", "الغدة الدرقية": "Thyroid Profile",
+    "هرمون الحليب": "Prolactin (PRL)", "برولاكتين": "Prolactin (PRL)",
+    "اميليز": "Amylase in (serum)", "ليبيز": "Lipase in serum",
+    "زمن البروثرومبين": "PT", "سيوله": "PT", "سيولة": "PT",
+    "الفا فيتو بروتين": "AFP", "دي دايمر": "D-dimer",
+    "زنك": "Zinc (blood)", "الزنك": "Zinc (blood)",
 }
 
 # مصطلحات غامضة: ممنوع الاختيار التلقائي، لازم المستخدم يحدد
@@ -186,6 +229,20 @@ AMBIGUOUS_TERMS = {
     "crp": "CRP / hs-CRP",
     "cortisol": "AM / PM / Urine",
     "vitamin d2": "D2 vs D3 - أكد الاختيار",
+    # عربي: مصطلحات ليها أكتر من صورة بسعر مختلف
+    "زلال": "زلال الدم (Albumin) غير زلال البول (Microalbuminuria)",
+    "صفرا": "Bilirubin: Total / Direct / Indirect",
+    "صفراء": "Bilirubin: Total / Direct / Indirect",
+    "بيليروبين": "Bilirubin: Total / Direct / Indirect",
+    "انزيمات الكبد": "ALT / AST / ALP / GGT - حدد أو خد Liver Profile",
+    "هرمون الذكوره": "Testosterone Total / Free",
+    "هرمون الذكورة": "Testosterone Total / Free",
+    "تستوستيرون": "Testosterone Total / Free",
+    "الكبد الوبائي": "HBs Ag / HCV IgG - حدد أنهي واحد",
+    "فيروسات كبديه": "HBs Ag / HCV IgG - حدد أنهي واحد",
+    "املاح": "Na / K / Ca / Mg / PO4 - حدد المطلوب",
+    "أملاح": "Na / K / Ca / Mg / PO4 - حدد المطلوب",
+    "هرمونات": "حدد الهرمون المطلوب بالاسم",
 }
 
 
@@ -314,6 +371,51 @@ def search_tests(term: str, idx: PriceIndex, limit: int = 60) -> List[TestRec]:
 # ------------------------------------------------------------
 # 4b) Bundle conflict detection  ==  منع الدفع مرتين
 # ------------------------------------------------------------
+
+# ------------------------------------------------------------
+# 4b) لصق قائمة تحاليل (Copy/Paste من رسالة عميل)
+# ------------------------------------------------------------
+
+# فواصل آمنة. ملاحظة: مش بنقسم على "و" — أسماء كتير بتبدأ بيها
+# (وظائف، ورم) والقسمة الغلط بتولّد ضجيج أكتر من فايدتها.
+_BULK_SPLIT = re.compile(r"[\n\r,،؛;/|+]+")
+
+# ترقيم وبولت في أول السطر: "1." / "1)" / "-" / "•" / "٢-"
+_BULK_BULLET = re.compile(r"^\s*(?:[-–—*•·◦●]+|[\d\u0660-\u0669]{1,3}\s*[).\-:،]?)\s*")
+
+# سطور مش تحاليل: تليفونات، تواريخ، أسعار
+_BULK_NOISE = re.compile(
+    r"^(?:\+?\d[\d\s\-()]{5,}|\d{1,4}[/\-.]\d{1,2}[/\-.]\d{1,4}|"
+    r"[\d\u0660-\u0669\s.,]+)$")
+
+BULK_MAX_LINES = 60
+
+
+def parse_bulk_tests(raw: str, limit: int = BULK_MAX_LINES) -> List[str]:
+    """
+    بيحوّل نص ملزوق لقائمة أسماء مرشّحة — بيشيل الترقيم والضجيج
+    والتكرار بس. مش بيطابق ولا بيخمّن؛ ده شغل resolve_test.
+    """
+    if not raw or not raw.strip():
+        return []
+
+    out, seen = [], set()
+    for chunk in _BULK_SPLIT.split(raw):
+        s = _BULK_BULLET.sub("", chunk).strip()
+        s = s.strip(" \t:-–—•*.،؛?؟\"'()[]")
+        if len(s) < 2 or _BULK_NOISE.match(s):
+            continue
+        if not re.search(r"[a-zA-Z\u0600-\u06FF]", s):   # لازم فيه حروف
+            continue
+        k = norm(s)
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        out.append(s)
+        if len(out) >= limit:
+            break
+    return out
+
 
 @dataclass
 class Conflict:

@@ -49,6 +49,7 @@ from price_utils import (MATCH_ALIAS, MATCH_AMBIGUOUS, MATCH_EXACT,
                          MATCH_NOT_FOUND, MATCH_SUGGEST, build_index,
                          build_whatsapp_link_safe, build_whatsapp_message,
                          bundle_saving, check_add, compute_totals,
+                         parse_bulk_tests,
                          format_phone_display, name_is_pdf_safe, norm,
                          resolve_test, search_tests, validate_patient_name,
                          validate_phone)
@@ -85,6 +86,7 @@ DEFAULTS = {
     "pending": None,          # Resolution محتاجة تأكيد
     "conflict": None,         # (Conflict, TestRec) محتاجة قرار
     "pending_panel": None,    # panel محتاج اختيار باقة/مفرّق
+    "bulk": None,             # نتيجة تحليل قائمة ملزوقة
     "branch": DEFAULT_BRANCH,
     "prefer_bundle": True,
     "discount_type": "Percentage",
@@ -149,24 +151,28 @@ def replace_with_bundle(rec, names, source="manual"):
                                  if norm(i["name"]) not in drop]
     add_record(rec, source)
 
-def add_panel_tests(names, source):
+def add_many(recs, source):
     """
-    إضافة تحاليل panel مع حماية الدفع مرتين.
+    إضافة مجموعة تحاليل مع حماية الدفع مرتين.
 
-    التحاليل هنا مفرّقة دايماً (مش باقات)، فالتعارض الوحيد الممكن هو
-    "covered" — يعني التحليل داخل في باقة موجودة بالفعل في الفاتورة.
-    دي حالة محسومة مش محتاجة قرار: العميل دفع تمنه، فبنتخطاه ونبلّغ.
-    لو الموظف عايزه بالفعل (نادر) يضيفه من خانة البحث — هناك البوابة
-    بتديله خيار "أضفه برضه (مقصود)".
+    الباقات بتتضاف الأول عن قصد: كده لو القائمة فيها باقة ومكوّن
+    منها، المكوّن هيتمسك كـ covered ويتخطى بدل ما يتحاسب مرتين.
 
-    بترجّع: (added, dup, covered)
+    covered    -> يتخطى (قرار محسوم، العميل دافع تمنه في الباقة)
+    supersedes -> ماينفعش يتقرر جماعي (فيه فلوس) -> يتأجل للبوابة اليدوية
+
+    بترجّع: (added, dup, covered, deferred)
     """
-    added, dup, covered = [], [], []
-    for t in names:
-        r = resolve_test(t, IDX)
-        if not r.is_confident:
+    # سطرين مختلفين ممكن يوصّلوا لنفس التحليل ("دهون" و "Lipid Profile")
+    seen, uniq = set(), []
+    for rec in sorted(recs, key=lambda r: not r.is_bundle):
+        if norm(rec.name) in seen:
             continue
-        rec = r.best
+        seen.add(norm(rec.name))
+        uniq.append(rec)
+
+    added, dup, covered, deferred = [], [], [], []
+    for rec in uniq:
         if has_test(rec.name):
             dup.append(rec.name)
             continue
@@ -174,12 +180,25 @@ def add_panel_tests(names, source):
         if c and c.kind == "covered":
             covered.append((rec.name, c.bundle, rec.price))
             continue
+        if c and c.kind == "supersedes":
+            deferred.append(rec.name)
+            continue
         add_record(rec, source)
         added.append(rec.name)
-    return added, dup, covered
+    return added, dup, covered, deferred
 
 
-def flash_panel_result(p, added, dup, covered):
+def add_panel_tests(names, source):
+    """أسماء -> سجلات مؤكدة -> add_many."""
+    recs = []
+    for t in names:
+        r = resolve_test(t, IDX)
+        if r.is_confident:
+            recs.append(r.best)
+    return add_many(recs, source)
+
+
+def flash_panel_result(p, added, dup, covered, deferred=()):
     if added:
         flash("success", f"تمت إضافة {len(added)} تحليل من {p}")
     if dup:
@@ -191,6 +210,10 @@ def flash_panel_result(p, added, dup, covered):
               f"⛔ اتخطّى {', '.join(n for n, _, _ in covered)} — "
               f"داخلين في باقة {bundle} الموجودة في الفاتورة. "
               f"وفّرت على العميل {saved:,} {CURRENCY}")
+    if deferred:
+        flash("warning",
+              f"📦 {', '.join(deferred)} ما اتضافتش — بتغطي تحاليل مفرّقة "
+              f"موجودة في الفاتورة. ضيفها من خانة البحث عشان تشوف الاستبدال")
 
 
 # ------------------------------------------------------------
@@ -303,9 +326,8 @@ for row in range(0, len(panel_names), PANEL_COLS):
                 if brec and st.session_state.prefer_bundle and brec.price <= itemized:
                     st.session_state.pending_panel = p
                 else:
-                    added, dup, covered = add_panel_tests(
-                        QUICK_PANELS[p]["tests"], p)
-                    flash_panel_result(p, added, dup, covered)
+                    res4 = add_panel_tests(QUICK_PANELS[p]["tests"], p)
+                    flash_panel_result(p, *res4)
                 st.rerun()
 
 # اختيار باقة أو مفرّق
@@ -328,9 +350,9 @@ if st.session_state.pending_panel:
             st.rerun()
     with b2:
         if st.button(f"🔬 مفرّق: {itemized:,} {CURRENCY}", use_container_width=True):
-            added, dup, covered = add_panel_tests(QUICK_PANELS[p]["tests"], p)
+            res4 = add_panel_tests(QUICK_PANELS[p]["tests"], p)
             st.session_state.pending_panel = None
-            flash_panel_result(p, added, dup, covered)
+            flash_panel_result(p, *res4)
             st.rerun()
     with b3:
         if st.button("إلغاء", use_container_width=True):
@@ -455,6 +477,77 @@ if st.session_state.conflict:
         with k3:
             if st.button("إلغاء", key="conf_cancel", use_container_width=True):
                 st.session_state.conflict = None
+                st.rerun()
+
+# ---- لصق قائمة تحاليل من رسالة العميل ----
+BULK = st.session_state.bulk
+
+with st.expander("📋 الصق قائمة تحاليل (من رسالة عميل)", expanded=bool(BULK)):
+    with st.form("bulk_form"):
+        raw = st.text_area(
+            "الزق النص هنا", height=130, label_visibility="collapsed",
+            placeholder="الزق رسالة العميل زي ما هي — عربي أو إنجليزي:\n"
+                        "1- صورة دم كاملة\n2- سكر صائم\n"
+                        "فيتامين د، كرياتينين\nTSH + Ferritin")
+        go = st.form_submit_button("🔍 اقرأ القائمة", use_container_width=True)
+
+    if go:
+        toks = parse_bulk_tests(raw)
+        conf, choose, missing = [], [], []
+        for t in toks:
+            r = resolve_test(t, IDX)
+            if r.is_confident:
+                conf.append((t, r.best))
+            elif r.candidates:
+                choose.append((t, r.candidates[:6], r.reason))
+            else:
+                missing.append(t)
+        st.session_state.bulk = {"confident": conf, "choose": choose,
+                                 "missing": missing}
+        if not toks:
+            flash("warning", "مفيش أي سطر صالح في النص ده")
+        st.rerun()
+
+    if BULK:
+        st.caption(f"مؤكد {len(BULK['confident'])}  ·  محتاج اختيار "
+                   f"{len(BULK['choose'])}  ·  مش متعرف عليه "
+                   f"{len(BULK['missing'])}")
+        chosen = []
+
+        if BULK["confident"]:
+            st.markdown("**✅ اتعرف عليها — شيل علامة أي حاجة مش عايزها**")
+            for i, (t, rec) in enumerate(BULK["confident"]):
+                tag = " 📦" if rec.is_bundle else ""
+                lbl = f"{rec.name}{tag} — {rec.price:,} {CURRENCY}"
+                if t.strip().lower() != rec.name.lower():
+                    lbl += f"   ‹ {t}"
+                if st.checkbox(lbl, value=True, key=f"bulk_ok_{i}"):
+                    chosen.append(rec)
+
+        if BULK["choose"]:
+            st.markdown("**🔎 محتاجة تحديد منك**")
+            for i, (t, cands, why) in enumerate(BULK["choose"]):
+                opts = ["— تجاهل —"] + [f"{c.name} · {c.price:,}" for c in cands]
+                pick = st.selectbox(f"«{t}» — {why}", opts, key=f"bulk_pick_{i}")
+                if pick != opts[0]:
+                    chosen.append(cands[opts.index(pick) - 1])
+
+        if BULK["missing"]:
+            st.markdown("**⛔ مش لاقيلها مقابل — ضيفها يدوي من خانة البحث**")
+            st.code("\n".join(BULK["missing"]), language=None)
+
+        g1, g2 = st.columns(2)
+        with g1:
+            if st.button(f"➕ أضف المختار ({len(chosen)})",
+                         use_container_width=True, type="primary",
+                         disabled=not chosen):
+                res4 = add_many(chosen, "bulk")
+                flash_panel_result("القائمة الملزوقة", *res4)
+                st.session_state.bulk = None
+                st.rerun()
+        with g2:
+            if st.button("🗑️ امسح القائمة", use_container_width=True):
+                st.session_state.bulk = None
                 st.rerun()
 
 # تصفح بالقسم
@@ -590,10 +683,17 @@ with s1:
 
 with s2:
     pdf_ready = bool(items) and name_chk.ok
-    pdf_safe = name_is_pdf_safe(name_chk.value)
+    try:
+        from pdf_invoice import unicode_ready
+        pdf_uni = unicode_ready()
+    except Exception:
+        pdf_uni = False
+    # مع خط يونيكود الأسماء العربية بقت شغالة؛ من غيره نرجع للقيد القديم
+    pdf_safe = pdf_uni or name_is_pdf_safe(name_chk.value)
     if pdf_ready and not pdf_safe:
         st.button("📄 PDF", disabled=True, use_container_width=True)
-        st.caption("الاسم بالعربي — الـ PDF بيدعم إنجليزي بس")
+        st.caption("مفيش خط يونيكود على السيرفر — اكتب الاسم إنجليزي "
+                   "أو ارفع خط في مجلد fonts/")
     elif pdf_ready:
         try:
             from pdf_invoice import build_pdf

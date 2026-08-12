@@ -164,6 +164,52 @@ for pn in ["🫀 Liver Profile", "🫘 Kidney Profile", "💉 Lipid Profile",
 
 check("Diamond branch bundles", len(bundles_for("Diamond")), 4)
 
+
+
+# ==========================================================================
+# 11) BULK PASTE  ==  لصق قائمة من رسالة عميل
+# ==========================================================================
+print("\n--- 11) BULK PASTE ------------------------------------------------")
+
+from price_utils import parse_bulk_tests
+
+_msg = """السلام عليكم
+1- صورة دم كاملة
+2. سكر صائم
+3) وظائف كبد
+- فيتامين د
+كرياتينين، حمض يوريك
+TSH + Ferritin
+01012345678
+12/8/2026
+شكرا"""
+
+_toks = parse_bulk_tests(_msg)
+check("bullets/numbering stripped", "صورة دم كاملة" in _toks, True)
+check("phone dropped", any("0101" in t for t in _toks), False)
+check("date dropped", any("12/8" in t for t in _toks), False)
+check("comma split", "حمض يوريك" in _toks, True)
+check("plus split", "Ferritin" in _toks, True)
+check("dedupe", len(parse_bulk_tests("CBC\ncbc\nCBC")), 1)
+check("empty input", parse_bulk_tests(""), [])
+
+_hit = sum(1 for t in _toks if resolve_test(t, idx).is_confident)
+check("arabic terms resolved", _hit >= 8, True)
+
+# كل alias لازم يشاور على اسم موجود فعلاً
+from price_utils import ALIASES
+_broken = [k for k, v in ALIASES.items() if not idx.get(v)]
+check("no broken aliases", _broken, [])
+
+# الأشكال العربية للـ PDF
+from arabic_pdf import shape_arabic, to_pdf_text, has_arabic
+check("lam-alef ligature", shape_arabic("لا"), "\ufefb")
+check("initial/medial/final", shape_arabic("لبنى"),
+      "\ufedf\ufe92\ufee8\ufef0")
+check("latin untouched", to_pdf_text("CBC"), "CBC")
+check("latin run kept inside arabic", "Ali" in to_pdf_text("أحمد Ali"), True)
+check("no arabic -> no change", has_arabic("Hussein"), False)
+
 print("\n" + "=" * 74)
 if fails:
     print(f"{len(fails)} FAILURE(S)")
