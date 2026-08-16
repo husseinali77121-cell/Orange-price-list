@@ -18,7 +18,7 @@ streamlit run Invoice.py
 | `bundles.py` | **الباقات — عدّل الأسعار من هنا** |
 | `pdf_invoice.py` | توليد الـ PDF |
 | `labs_price_list.py` | قاعدة الأسعار (832 صف / 50 قسم) |
-| `test_price_utils.py` | 45 اختبار — شغّله بعد أي تحديث لقائمة الأسعار |
+| `test_price_utils.py` | اختبارات regression للـ pricing / aliases / phone / bundles / PDF — شغّله بعد أي تحديث |
 
 ## قواعد التحقق
 - **اسم التحليل**: exact → alias → مصطلح غامض → قريب → مش موجود.

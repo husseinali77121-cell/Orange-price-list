@@ -114,7 +114,12 @@ def build_index(labs_db: dict, bundle_defs: Optional[list] = None,
         idx.records.append(rec)
         idx.bundles.append(rec)
         for a in b.get("aliases", ()):
-            idx.aliases[norm(a)] = rec.name
+            # لا تسمح للـ bundle alias أن يطغى على alias أساسي موجود
+            # بالفعل (مثال: "كوليسترول" يجب أن يبقى Cholesterol،
+            # وليس Lipid Profile).
+            ak = norm(a)
+            if ak and ak not in idx.aliases:
+                idx.aliases[ak] = rec.name
 
     idx.keys = sorted(idx.by_key.keys())
     return idx
@@ -506,8 +511,6 @@ def validate_patient_name(raw: str, min_parts: int = 2) -> FieldCheck:
     ar, en = has_arabic(name), bool(re.search(r"[A-Za-z]", name))
     if ar and en:
         warnings.append("الاسم مخلوط عربي/إنجليزي - وحّده")
-    if ar:
-        warnings.append("الاسم بالعربي: هيظهر ؟؟؟ في الـ PDF - اكتبه إنجليزي للـ PDF")
 
     if en and not ar:
         name = " ".join(w if w.isupper() else w.capitalize() for w in name.split())
@@ -536,9 +539,17 @@ def validate_phone(raw: str, default_cc: str = "20") -> FieldCheck:
     بيرجّع الرقم بصيغة E.164 من غير + (ده اللي wa.me بياخده).
     مقبول: 01012345678 / +201012345678 / 00201012345678 / 201012345678
     """
-    s = re.sub(r"[^\d+]", "", unicodedata.normalize("NFKC", raw or "").strip())
-    if not s:
+    raw_s = unicodedata.normalize("NFKC", raw or "").strip()
+    if not raw_s:
         return FieldCheck(False, "", ["رقم التليفون مطلوب لإرسال الواتساب"])
+
+    # اسمح فقط بفواصل التنسيق المعتادة؛ لا تحوّل الحروف إلى أرقام بصمت.
+    if not re.fullmatch(r"[\d+\s().\-]+", raw_s):
+        return FieldCheck(False, "", ["الرقم فيه حروف أو رموز غير مسموحة"])
+    if raw_s.count("+") > 1 or ("+" in raw_s and not raw_s.lstrip().startswith("+")):
+        return FieldCheck(False, "", ["علامة + يجب أن تكون في بداية الرقم فقط"])
+
+    s = re.sub(r"[^\d+]", "", raw_s)
 
     if s.startswith("00"):
         s = "+" + s[2:]

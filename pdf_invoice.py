@@ -55,6 +55,14 @@ class ReceiptPDF(FPDF):
             except Exception:
                 self.uni = False
         self.qr_bytes = None
+        if HAS_QR and maps_url:
+            try:
+                buf = BytesIO()
+                qrcode.make(maps_url).save(buf, format="PNG")
+                self.qr_bytes = buf.getvalue()
+            except Exception:
+                # الـ QR ميزة إضافية؛ فشل توليده لا يمنع إنشاء الفاتورة.
+                self.qr_bytes = None
 
     def set_font(self, family=None, style="", size=0):
         """
@@ -65,10 +73,6 @@ class ReceiptPDF(FPDF):
             family = UNI_FONT
             style = style.replace("I", "")     # مفيش مائل في الخط ده
         return super().set_font(family, style, size)
-        if HAS_QR and maps_url:
-            buf = BytesIO()
-            qrcode.make(maps_url).save(buf, format="PNG")
-            self.qr_bytes = buf.getvalue()
 
     def header(self):
         self.set_font("Helvetica", "B", 18)

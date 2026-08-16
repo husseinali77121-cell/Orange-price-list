@@ -64,8 +64,9 @@ check("digits rejected", validate_patient_name("Ahmed 123").ok, False)
 check("valid passes", validate_patient_name("ahmed ali hassan").ok, True)
 check("auto title-case", validate_patient_name("ahmed ali").value, "Ahmed Ali")
 check("single name warns", len(validate_patient_name("Ahmed").warnings) > 0, True)
-check("arabic warns for PDF",
-      any("PDF" in w for w in validate_patient_name("أحمد علي").warnings), True)
+check("arabic name remains valid", validate_patient_name("أحمد علي").ok, True)
+check("arabic PDF warning removed",
+      any("؟؟؟" in w for w in validate_patient_name("أحمد علي").warnings), False)
 check("arabic still ok for WhatsApp", validate_patient_name("أحمد علي").ok, True)
 
 print("\n--- 4) PHONE ----------------------------------------------------")
@@ -78,6 +79,8 @@ check("missing zero", validate_phone("1012345678").value, "201012345678")
 check("bad prefix 013 rejected", validate_phone("01312345678").ok, False)
 check("too short rejected", validate_phone("0101234").ok, False)
 check("letters rejected", validate_phone("010abc45678").ok, False)
+check("letters cannot be silently discarded", validate_phone("010abc12345678").ok, False)
+check("plus must be leading", validate_phone("010+12345678").ok, False)
 check("empty rejected", validate_phone("").ok, False)
 check("intl accepted", validate_phone("+966501234567").ok, True)
 
@@ -114,6 +117,10 @@ for bn, want in [("Lipid Profile", 700), ("Liver Profile", 850),
     check(f"'{bn}' price", r.best.price, want)
     check(f"'{bn}' flagged as bundle", r.best.is_bundle, True)
 
+check("Arabic cholesterol alias stays single-test",
+      resolve_test("كوليسترول", idx).best.name, "Cholesterol")
+check("Arabic cholesterol alias is not bundle",
+      resolve_test("كوليسترول", idx).best.is_bundle, False)
 check("alias 'lft'", resolve_test("lft", idx).best.name, "Liver Profile")
 check("alias 'tft'", resolve_test("tft", idx).best.name, "Thyroid Profile")
 check("arabic alias 'كبد'", resolve_test("كبد", idx).best.name, "Liver Profile")
@@ -209,6 +216,21 @@ check("initial/medial/final", shape_arabic("لبنى"),
 check("latin untouched", to_pdf_text("CBC"), "CBC")
 check("latin run kept inside arabic", "Ali" in to_pdf_text("أحمد Ali"), True)
 check("no arabic -> no change", has_arabic("Hussein"), False)
+
+print("\n--- 12) PDF / QR REGRESSION --------------------------------------")
+try:
+    from pdf_invoice import HAS_QR, ReceiptPDF, build_pdf
+    pdf_obj = ReceiptPDF(maps_url="https://maps.google.com/?q=Orange+Lab")
+    check("QR payload generated", bool(pdf_obj.qr_bytes) if HAS_QR else True, True)
+    pdf_bytes = build_pdf(
+        [{"name": "CBC", "price": 400, "result_days": 1, "collection_notes": "EDTA"}],
+        {"subtotal": 400, "discount": 0, "total": 400, "max_days": 1,
+         "unpriced": []},
+        "أحمد علي", "201012345678", "Dr. Sameh", "2026-08-17",
+        maps_url="https://maps.google.com/?q=Orange+Lab")
+    check("PDF renders bytes", isinstance(pdf_bytes, (bytes, bytearray)) and len(pdf_bytes) > 1000, True)
+except Exception as e:
+    check("PDF regression suite", f"error: {e}", "no error")
 
 print("\n" + "=" * 74)
 if fails:
