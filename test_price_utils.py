@@ -229,6 +229,16 @@ try:
         "أحمد علي", "201012345678", "Dr. Sameh", "2026-08-17",
         maps_url="https://maps.google.com/?q=Orange+Lab")
     check("PDF renders bytes", isinstance(pdf_bytes, (bytes, bytearray)) and len(pdf_bytes) > 1000, True)
+    # Regression: النصوص الطويلة/غير القابلة للكسر لا يجب أن تعطل الـ PDF.
+    long_text = "تحليل " + ("LongTest-" * 80)
+    long_pdf = build_pdf(
+        [{"name": long_text, "price": 100, "result_days": 1,
+          "collection_notes": long_text}],
+        {"subtotal": 100, "discount": 0, "total": 100, "max_days": 1,
+         "unpriced": []},
+        "أحمد علي", "201012345678", "Dr. Sameh", "2026-08-17")
+    check("long/unbreakable PDF text renders",
+          isinstance(long_pdf, (bytes, bytearray)) and len(long_pdf) > 1000, True)
 except Exception as e:
     check("PDF regression suite", f"error: {e}", "no error")
 

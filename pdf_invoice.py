@@ -7,6 +7,7 @@ from io import BytesIO
 from typing import List
 
 from fpdf import FPDF
+from fpdf.enums import WrapMode
 
 from arabic_pdf import find_font, has_arabic, to_pdf_text
 
@@ -122,7 +123,7 @@ class ReceiptPDF(FPDF):
         for n, it in enumerate(items, 1):
             x0, y0 = self.get_x(), self.get_y()
             self.cell(12, 7, str(n), border=1, align="C")
-            self.multi_cell(108, 7, _safe(it["name"]), border=1)
+            self.multi_cell(108, 7, _safe(it["name"]), border=1, wrapmode=WrapMode.CHAR)
             h = self.get_y() - y0
             self.set_xy(x0 + 120, y0)
             days = it.get("result_days")
@@ -160,7 +161,7 @@ class ReceiptPDF(FPDF):
             self.cell(0, 5, "Collection notes:", ln=True)
             self.set_font("Helvetica", "", 8)
             for n in notes[:8]:
-                self.multi_cell(0, 4.5, _safe("- " + n))
+                self.multi_cell(0, 4.5, _safe("- " + n), wrapmode=WrapMode.CHAR)
 
         self.ln(6)
         self.set_font("Helvetica", "I", 9)
