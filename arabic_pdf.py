@@ -224,9 +224,28 @@ FONT_CANDIDATES = [
 ]
 
 
+def _local_ttfs(bold: bool = False):
+    """
+    أي .ttf مرفوع جوه مجلد الخطوط - بيدوّر على fonts و Fonts
+    (لينكس case-sensitive، والمجلد في الريبو اسمه Fonts بحرف كبير).
+    """
+    found = []
+    for folder in ("fonts", "Fonts", "FONTS"):
+        d = os.path.join(_HERE, folder)
+        if not os.path.isdir(d):
+            continue
+        for f in sorted(os.listdir(d)):
+            if not f.lower().endswith((".ttf", ".otf")):
+                continue
+            is_bold = "bold" in f.lower()
+            if is_bold == bool(bold):
+                found.append(os.path.join(d, f))
+    return found
+
+
 def find_font(bold: bool = False):
     """بيرجّع مسار أول خط متاح يدعم يونيكود، أو None."""
-    cands = list(FONT_CANDIDATES)
+    cands = _local_ttfs(bold) + list(FONT_CANDIDATES)
     if bold:
         bolds = []
         for p in cands:
