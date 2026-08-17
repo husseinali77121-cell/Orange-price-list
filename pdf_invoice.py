@@ -7,7 +7,6 @@ from io import BytesIO
 from typing import List
 
 from fpdf import FPDF
-from fpdf.enums import WrapMode
 
 from arabic_pdf import find_font, has_arabic, to_pdf_text
 
@@ -56,14 +55,6 @@ class ReceiptPDF(FPDF):
             except Exception:
                 self.uni = False
         self.qr_bytes = None
-        if HAS_QR and maps_url:
-            try:
-                buf = BytesIO()
-                qrcode.make(maps_url).save(buf, format="PNG")
-                self.qr_bytes = buf.getvalue()
-            except Exception:
-                # الـ QR ميزة إضافية؛ فشل توليده لا يمنع إنشاء الفاتورة.
-                self.qr_bytes = None
 
     def set_font(self, family=None, style="", size=0):
         """
@@ -74,6 +65,10 @@ class ReceiptPDF(FPDF):
             family = UNI_FONT
             style = style.replace("I", "")     # مفيش مائل في الخط ده
         return super().set_font(family, style, size)
+        if HAS_QR and maps_url:
+            buf = BytesIO()
+            qrcode.make(maps_url).save(buf, format="PNG")
+            self.qr_bytes = buf.getvalue()
 
     def header(self):
         self.set_font("Helvetica", "B", 18)
@@ -123,7 +118,7 @@ class ReceiptPDF(FPDF):
         for n, it in enumerate(items, 1):
             x0, y0 = self.get_x(), self.get_y()
             self.cell(12, 7, str(n), border=1, align="C")
-            self.multi_cell(108, 7, _safe(it["name"]), border=1, wrapmode=WrapMode.CHAR)
+            self.multi_cell(108, 7, _safe(it["name"]), border=1)
             h = self.get_y() - y0
             self.set_xy(x0 + 120, y0)
             days = it.get("result_days")
@@ -161,7 +156,7 @@ class ReceiptPDF(FPDF):
             self.cell(0, 5, "Collection notes:", ln=True)
             self.set_font("Helvetica", "", 8)
             for n in notes[:8]:
-                self.multi_cell(0, 4.5, _safe("- " + n), wrapmode=WrapMode.CHAR)
+                self.multi_cell(0, 4.5, _safe("- " + n))
 
         self.ln(6)
         self.set_font("Helvetica", "I", 9)

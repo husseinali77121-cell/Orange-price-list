@@ -22,7 +22,7 @@ BUNDLES = [
         "collection_notes": "1.0 ml Serum — صايم 12 ساعة",
         "components": ["Cholesterol", "Triglycerides", "HDL", "LDL", "VLDL"],
         "aliases": ["lipid", "lipids", "lipid profil", "دهون", "دهون الدم",
-                    "الدهون"],
+                    "الدهون", "كوليسترول"],
         "branches": ["Orange (La Cité)", "Diamond"],
     },
     {

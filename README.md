@@ -16,9 +16,9 @@ streamlit run Invoice.py
 | `price_utils.py` | التحقق من الأسماء + الأرقام + بناء رسالة الواتساب (بدون streamlit) |
 | `panels.py` | الـ Quick Panels |
 | `bundles.py` | **الباقات — عدّل الأسعار من هنا** |
-| `pdf_invoice.py` | توليد الـ PDF + حماية التفاف النصوص الطويلة |
+| `pdf_invoice.py` | توليد الـ PDF |
 | `labs_price_list.py` | قاعدة الأسعار (832 صف / 50 قسم) |
-| `test_price_utils.py` | اختبارات regression للـ pricing / aliases / phone / bundles / PDF — شغّله بعد أي تحديث |
+| `test_price_utils.py` | 45 اختبار — شغّله بعد أي تحديث لقائمة الأسعار |
 
 ## قواعد التحقق
 - **اسم التحليل**: exact → alias → مصطلح غامض → قريب → مش موجود.
@@ -26,7 +26,7 @@ streamlit run Invoice.py
 - **مصطلحات محجوبة من التخمين**: PSA, H.pylori, RF, HBs, HCV, HIV, Cortisol —
   كل واحد ليه أكتر من صورة بسعر مختلف.
 - **رقم الموبايل**: 010/011/012/015 بس، وبيتحول لـ `20XXXXXXXXXX` للواتساب.
-- **الاسم**: مفيش أرقام، 3 حروف على الأقل، والعربي مدعوم في الـ PDF بخط Unicode.
+- **الاسم**: مفيش أرقام، 3 حروف على الأقل، تحذير لو عربي (الـ PDF إنجليزي).
 
 ## تحديث قائمة الأسعار
 بعد ما تستبدل `labs_price_list.py`:
@@ -94,9 +94,3 @@ streamlit run Invoice.py
 
 ### الاختبارات
 `python3 test_price_utils.py` — لازم يطلع `ALL CHECKS PASSED` قبل أي رفع.
-
-
-### إصلاح PDF — HARDENED v2 (أغسطس 2026)
-- نصوص أسماء التحاليل وملاحظات السحب الطويلة تستخدم **character-level wrapping** بدل الاعتماد على فصل الكلمات فقط.
-- هذا يمنع خطأ `Not enough horizontal space to render a single character` عند وجود كلمة/سلسلة طويلة غير قابلة للكسر.
-- تمت إضافة regression test لنص عربي/إنجليزي طويل وغير قابل للكسر داخل جدول الفاتورة والملاحظات.
