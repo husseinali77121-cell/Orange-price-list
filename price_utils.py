@@ -651,13 +651,12 @@ def build_whatsapp_message(items: List[dict], totals: dict, patient_name: str,
             L.append(f"التاريخ: {invoice_date}")
         L.append("")
         for i, it in enumerate(items, 1):
-            p = int(it["price"])
+            # ملحوظة: من غير سعر بجوار كل تحليل عمداً — رسالة الواتساب
+            # بتوريك الإجمالي والخصم والمطلوب بس (PDF لسه فيه سعر كل تحليل).
             if compact:
-                L.append(f"{i}. {it['name']} - {p:,}" if p
-                         else f"{i}. {it['name']} - ?")
+                L.append(f"{i}. {it['name']}")
             else:
-                L.append(f"{i}. {it['name']} — "
-                         + (f"{p:,} {currency}" if p else "يُحدد لاحقاً"))
+                L.append(f"{i}. {it['name']} —")
         L.append(sep)
         L.append(f"الإجمالي: {totals['subtotal']:,} {currency}")
         if totals["discount"] > 0:
@@ -679,7 +678,8 @@ def build_whatsapp_message(items: List[dict], totals: dict, patient_name: str,
         if patient_name:
             L.append(f"Patient: *{patient_name}*")
         for i, it in enumerate(items, 1):
-            L.append(f"{i}. {it['name']} .... {int(it['price']):,} {currency}")
+            # نفس المنطق: من غير سعر بجوار كل تحليل في رسالة الواتساب.
+            L.append(f"{i}. {it['name']}")
         L.append("-------------------")
         L.append(f"Subtotal: {totals['subtotal']:,} {currency}")
         if totals["discount"] > 0:
