@@ -2,6 +2,8 @@ streamlit
 fpdf2
 qrcode
 Pillow
+requests
+pandas
 # اختياري: بيحسّن تشكيل العربي في الـ PDF. البرنامج شغال من غيرهم.
 # arabic-reshaper
 # python-bidi

@@ -8,7 +8,7 @@
 # ============================================================
 
 import uuid
-from datetime import date
+from datetime import date, datetime
 from io import BytesIO
 
 import streamlit as st
@@ -48,15 +48,24 @@ from panels import (BRANCHES, DEFAULT_BRANCH, QUICK_PANELS, panel_bundle_name,
 from price_utils import (MATCH_ALIAS, MATCH_AMBIGUOUS, MATCH_EXACT,
                          MATCH_NOT_FOUND, MATCH_SUGGEST, build_index,
                          build_whatsapp_link_safe, build_whatsapp_message,
-                         bundle_saving, check_add, compute_totals,
-                         parse_bulk_tests,
+                         build_whatsapp_url, bundle_saving, check_add,
+                         compute_totals, decode_quote, encode_quote,
+                         generate_quote_id, parse_bulk_tests, quote_age_hours,
                          format_phone_display, name_is_pdf_safe, norm,
-                         resolve_test, search_tests, validate_patient_name,
-                         validate_phone)
+                         resolve_test, search_tests, suggest_bundle_offers,
+                         validate_patient_name, validate_phone)
+from tracking import (LOST_SALE_REASONS, REFERRAL_SOURCES, make_event,
+                      month_key, summarize_events)
+from github_store import (GithubEventStore, GithubStoreError, events_path,
+                          store_from_secrets)
 
 CURRENCY = "ج.م"
 LAB_NAME_AR = "معمل أورانج للتحاليل الطبية"
 MAPS_URL = "https://maps.app.goo.gl/vLdtTk9KctLXtpE4A?g_st=ac"
+
+# TODO: حط هنا لينك التطبيق المنشور فعلياً على Streamlit Cloud
+# (من غير كده زرار "حفظ العرض" هيولّد لينك مايفتحش صح)
+APP_URL = "https://REPLACE-WITH-YOUR-STREAMLIT-APP-URL"
 
 
 # ------------------------------------------------------------
@@ -75,6 +84,15 @@ def load_panel_report():
 
 IDX = load_index()
 BROKEN_PANELS = load_panel_report()
+
+
+@st.cache_resource(show_spinner=False)
+def get_event_store():
+    """
+    None لو التتبّع مش متظبط في secrets — البرنامج بيكمل شغل عادي
+    من غيره، التسويق مش المفروض يوقف الفاتورة أبداً.
+    """
+    return store_from_secrets(st.secrets)
 
 
 # ------------------------------------------------------------
@@ -97,6 +115,11 @@ DEFAULTS = {
     "p_date": date.today(),
     "wa_lang": "ar",
     "flash": [],
+    "quote_id": "",           # OR-YYMMDD-NNNN — تتبّع داخلي بس
+    "dismissed_offers": [],   # مفاتيح باقات اتقفلت في السيشن دي
+    "saved_link": "",         # آخر لينك "حفظ العرض" اتولّد
+    "saved_at": "",           # وقت توليده (ISO) — لحساب صلاحية الـ 48 ساعة
+    "referral_source": REFERRAL_SOURCES[-1],
 }
 for k, v in DEFAULTS.items():
     st.session_state.setdefault(k, v)
@@ -104,6 +127,43 @@ for k, v in DEFAULTS.items():
 
 def flash(kind, msg):
     st.session_state.flash.append((kind, msg))
+
+
+# ---- استرجاع عرض محفوظ من لينك "حفظ العرض" (Save Quote) ----
+if not st.session_state.get("_quote_link_checked"):
+    st.session_state["_quote_link_checked"] = True
+    q = st.query_params.get("q")
+    if q:
+        data = decode_quote(q)
+        if data:
+            st.session_state["items"] = [
+                {"uid": uuid.uuid4().hex[:8], "name": it["n"], "price": int(it["p"]),
+                 "result_days": it.get("d"), "collection_notes": it.get("c", ""),
+                 "category": it.get("cat", ""), "source": "saved_quote"}
+                for it in data.get("items", [])
+            ]
+            st.session_state["p_name"] = data.get("name", "")
+            st.session_state["p_phone"] = data.get("phone", "")
+            st.session_state["p_doctor"] = data.get("doctor", "")
+            try:
+                st.session_state["p_date"] = date.fromisoformat(data.get("date_iso", ""))
+            except Exception:
+                pass
+            st.session_state["discount_type"] = data.get("dtype", "Percentage")
+            st.session_state["discount_value"] = data.get("dval", 0.0)
+            st.session_state["quote_id"] = data.get("id", "")
+            age_h = quote_age_hours(data.get("ts", ""))
+            if age_h is not None and age_h > 48:
+                flash("warning",
+                      f"⚠️ العرض المحفوظ {data.get('id','')} عمره {age_h:.0f} ساعة "
+                      f"(أكتر من 48 ساعة) — راجع الأسعار قبل ما تأكّده للعميل")
+            else:
+                flash("info", f"📂 اتفتح عرض محفوظ: {data.get('id','')}")
+        else:
+            flash("error", "⚠️ لينك العرض ده تالف أو معدَّل — مش هينفتح")
+
+if not st.session_state["quote_id"]:
+    st.session_state["quote_id"] = generate_quote_id()
 
 
 def has_test(name: str) -> bool:
@@ -246,6 +306,8 @@ with st.sidebar:
 
     st.divider()
     st.caption("👨‍💻 Developed by Dr/Hussein Ali")
+    st.caption("📊 تتبّع العروض: " +
+              ("✅ مفعّل" if get_event_store() else "⚪ مش متظبط (secrets)"))
 
 
 # ------------------------------------------------------------
@@ -253,6 +315,8 @@ with st.sidebar:
 # ------------------------------------------------------------
 
 st.markdown("## 🍊 Orange Lab — فاتورة تحاليل")
+st.caption(f"🧾 Quote ID: `{st.session_state.quote_id}`  ·  للمتابعة الداخلية بس، "
+           f"مش بتتحط في رسالة العميل")
 
 for kind, msg in st.session_state.flash:
     getattr(st, kind)(msg)
@@ -274,6 +338,11 @@ with c2:
     st.session_state.p_doctor = st.text_input(
         "الطبيب المحوِّل", value=st.session_state.p_doctor, placeholder="Dr. Sameh")
     st.session_state.p_date = st.date_input("التاريخ", value=st.session_state.p_date)
+
+st.session_state.referral_source = st.selectbox(
+    "من فين عرف عن المعمل؟", REFERRAL_SOURCES,
+    index=REFERRAL_SOURCES.index(st.session_state.referral_source),
+    help="بيساعدنا نعرف أي قناة تسويقية بتجيب عملاء أكتر")
 
 name_chk = validate_patient_name(st.session_state.p_name)
 phone_chk = validate_phone(st.session_state.p_phone)
@@ -600,6 +669,35 @@ else:
         st.session_state["items"] = [i for i in items if i["uid"] != remove_uid]
         st.rerun()
 
+    # ---- 💡 Smart Offer Engine: اقتراح استباقي لاستبدال مفرّق بباقة أرخص ----
+    # بيدوّر على الفاتورة كلها في كل مرة — مش بس وقت إضافة تحليل جديد،
+    # عشان ما نضيّعش فرصة upsell لو الموظف ضاف التحاليل واحد واحد.
+    offers = [o for o in suggest_bundle_offers(items, IDX)
+             if o["bundle"].key not in st.session_state.dismissed_offers]
+    for off in offers:
+        b = off["bundle"]
+        st.info(
+            f"💡 **اقتراح توفير للعميل**\n\n"
+            f"بإمكانك استبدال {len(off['matched_names'])} تحاليل منفردة "
+            f"بـ «{b.name}»\n\n"
+            f"السعر يقل من {off['spent']:,} إلى {b.price:,} {CURRENCY} — "
+            f"العميل يوفر **{off['saving']:,} {CURRENCY}**"
+        )
+        oc1, oc2 = st.columns([2, 1])
+        with oc1:
+            if st.button(f"🔁 استبدلهم بـ «{b.name}»", key=f"offer_add_{b.key}",
+                         use_container_width=True, type="primary"):
+                replace_with_bundle(b, off["matched_names"], source="smart_offer")
+                flash("success", f"اتحطت باقة {b.name} بدل "
+                                 f"{len(off['matched_names'])} مفرّق — "
+                                 f"وفّرت على العميل {off['saving']:,} {CURRENCY}")
+                st.rerun()
+        with oc2:
+            if st.button("تجاهل", key=f"offer_dismiss_{b.key}",
+                         use_container_width=True):
+                st.session_state.dismissed_offers.append(b.key)
+                st.rerun()
+
     st.markdown("")
     d1, d2 = st.columns([1, 2])
     with d1:
@@ -667,6 +765,24 @@ if not phone_chk.ok:
 if totals.get("unpriced"):
     blockers.append("فيه تحاليل من غير سعر")
 
+# ---- تسجيل حدث "quote" مرة واحدة بس لكل quote_id، أول ما الفاتورة تبقى
+#      جاهزة للإرسال (اسم+رقم صح+فيها تحاليل) — أساس حساب نسبة التحويل
+if not blockers:
+    _log_key = f"_logged_{st.session_state.quote_id}"
+    if not st.session_state.get(_log_key):
+        store = get_event_store()
+        if store:
+            try:
+                store.append(events_path(month_key()), make_event(
+                    "quote", st.session_state.quote_id,
+                    branch=st.session_state.branch,
+                    referral_source=st.session_state.referral_source,
+                    total=totals["total"], count=totals["count"],
+                    items=[i["name"] for i in items]))
+            except GithubStoreError:
+                pass  # التتبّع مش أولوية أعلى من إتمام الفاتورة نفسها
+        st.session_state[_log_key] = True
+
 s1, s2, s3 = st.columns(3)
 
 with s1:
@@ -715,11 +831,157 @@ with s2:
 with s3:
     if st.button("🗑️ فاتورة جديدة", use_container_width=True):
         for k in ("items", "pending", "pending_panel", "conflict", "p_name", "p_phone",
-                  "p_doctor", "discount_value"):
+                  "p_doctor", "discount_value", "quote_id", "dismissed_offers",
+                  "saved_link", "saved_at", "referral_source"):
             st.session_state[k] = DEFAULTS[k] if not isinstance(DEFAULTS[k], list) else []
         st.session_state.p_date = date.today()
+        st.session_state["_show_lost_reason"] = False
+        st.query_params.clear()
         st.rerun()
 
 if items:
     with st.expander("👀 معاينة رسالة الواتساب"):
         st.code(wa_msg, language=None)
+
+st.divider()
+
+
+# ------------------------------------------------------------
+# 6) Save Quote — لينك يرجّع نفس الفاتورة خلال 24-48 ساعة
+#    "هفكر وأرد عليكم" -> نحفظله العرض بدل ما نضيّع العميل
+# ------------------------------------------------------------
+
+st.markdown("#### 💾 حفظ العرض للمتابعة لاحقاً")
+
+sv1, sv2 = st.columns([1, 2])
+with sv1:
+    if st.button("💾 احفظ العرض", use_container_width=True, disabled=not items):
+        payload = {
+            "id": st.session_state.quote_id,
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "items": [{"n": i["name"], "p": i["price"], "d": i.get("result_days"),
+                       "c": i.get("collection_notes", ""), "cat": i.get("category", "")}
+                      for i in items],
+            "name": st.session_state.p_name,
+            "phone": st.session_state.p_phone,
+            "doctor": st.session_state.p_doctor,
+            "date_iso": st.session_state.p_date.isoformat(),
+            "dtype": st.session_state.discount_type,
+            "dval": st.session_state.discount_value,
+        }
+        st.session_state.saved_link = f"{APP_URL}/?q={encode_quote(payload)}"
+        st.session_state.saved_at = payload["ts"]
+        st.rerun()
+
+if st.session_state.saved_link:
+    with sv2:
+        st.text_input("لينك العرض — صالح 48 ساعة (شير له، افتحه تاني يرجّع نفس الفاتورة)",
+                      value=st.session_state.saved_link, key="saved_link_box")
+    if APP_URL.startswith("https://REPLACE"):
+        st.warning("⚠️ لسه محطوطش لينك التطبيق الحقيقي في `APP_URL` أعلى الملف — "
+                   "غيّره عشان اللينك ده يفتح صح")
+
+    if phone_chk.ok:
+        rem_name = name_chk.value if name_chk.ok else st.session_state.p_name
+        age_now = quote_age_hours(st.session_state.saved_at)
+        remaining = max(0, round(48 - age_now)) if age_now is not None else 48
+        reminder_msg = (
+            f"🍊 *{LAB_NAME_AR}*\n"
+            f"مرحباً {rem_name}،\n"
+            f"بنفكّرك بعرض التحاليل اللي طلبته:\n"
+            f"{st.session_state.saved_link}\n"
+            f"*المطلوب: {totals['total']:,} {CURRENCY}*\n"
+            f"⏱️ العرض متاح لغاية {remaining} ساعة كمان"
+        )
+        rem_url = build_whatsapp_url(phone_chk.value, reminder_msg)
+        st.markdown(
+            f'<a href="{rem_url}" target="_blank" style="text-decoration:none;">'
+            f'<div style="background:#25D366;color:#fff;text-align:center;'
+            f'padding:9px;border-radius:6px;font-weight:700;margin-top:.4rem;">'
+            f'📲 ابعت تذكير واتساب للعميل</div></a>',
+            unsafe_allow_html=True)
+
+st.divider()
+
+
+# ------------------------------------------------------------
+# 7) قرار العميل — Lost Sale / Converted
+#    الأساس اللي عليه نسبة التحويل ("38% من العملاء قالوا السعر")
+# ------------------------------------------------------------
+
+st.markdown("#### 📞 قرار العميل")
+
+oc1, oc2 = st.columns(2)
+with oc1:
+    if st.button("✅ اتباع / حجز", use_container_width=True, disabled=not items):
+        store = get_event_store()
+        if store:
+            try:
+                store.append(events_path(month_key()), make_event(
+                    "converted", st.session_state.quote_id,
+                    branch=st.session_state.branch, total=totals["total"]))
+                flash("success", "✅ اتسجّل كعملية بيع — تمام")
+            except GithubStoreError as e:
+                flash("error", f"مقدرتش أسجّل ده: {e}")
+        else:
+            flash("warning", "تتبّع العروض مش متظبط في الإعدادات (secrets)")
+        st.rerun()
+with oc2:
+    if st.button("❌ هيفوّت", use_container_width=True, disabled=not items):
+        st.session_state["_show_lost_reason"] = True
+        st.rerun()
+
+if st.session_state.get("_show_lost_reason"):
+    reason = st.radio("السبب؟", LOST_SALE_REASONS, key="lost_reason_pick")
+    note = st.text_input("ملاحظة (اختياري)", key="lost_reason_note")
+    lc1, lc2 = st.columns(2)
+    with lc1:
+        if st.button("سجّل السبب", use_container_width=True, type="primary"):
+            store = get_event_store()
+            if store:
+                try:
+                    store.append(events_path(month_key()), make_event(
+                        "lost_sale", st.session_state.quote_id,
+                        branch=st.session_state.branch, reason=reason,
+                        note=note, total=totals["total"]))
+                    flash("success", f"اتسجّل: {reason}")
+                except GithubStoreError as e:
+                    flash("error", f"مقدرتش أسجّل ده: {e}")
+            else:
+                flash("warning", "تتبّع العروض مش متظبط في الإعدادات (secrets)")
+            st.session_state["_show_lost_reason"] = False
+            st.rerun()
+    with lc2:
+        if st.button("إلغاء", key="lost_cancel", use_container_width=True):
+            st.session_state["_show_lost_reason"] = False
+            st.rerun()
+
+st.divider()
+
+
+# ------------------------------------------------------------
+# 8) إحصائيات سريعة (تجريبي — نواة الـ Marketing Dashboard الجاي)
+# ------------------------------------------------------------
+
+with st.expander("📊 إحصائيات الشهر ده"):
+    _store = get_event_store()
+    if not _store:
+        st.caption("مش متظبط لسه — ضيف gh_events_token / gh_events_repo / "
+                  "gh_events_branch في Streamlit Secrets عشان الإحصائيات تشتغل")
+    else:
+        try:
+            _events, _ = _store.read(events_path(month_key()))
+            _s = summarize_events(_events)
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("عروض الشهر", _s["quotes"])
+            k2.metric("اتباعت", _s["converted"])
+            k3.metric("فاتت", _s["lost"])
+            k4.metric("نسبة التحويل", f"{_s['conversion_pct']}%")
+            if _s["top_lost_reasons"]:
+                st.caption("🔻 أكتر أسباب الفوات: " +
+                          " · ".join(f"{r} ({c})" for r, c in _s["top_lost_reasons"][:3]))
+            if _s["top_sources"]:
+                st.caption("📣 أكتر مصادر: " +
+                          " · ".join(f"{r} ({c})" for r, c in _s["top_sources"][:3]))
+        except GithubStoreError as e:
+            st.caption(f"مقدرتش أجيب الإحصائيات دلوقتي: {e}")

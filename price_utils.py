@@ -7,10 +7,15 @@
 
 from __future__ import annotations
 
+import base64
+import json
+import random
 import re
 import unicodedata
 import urllib.parse
+import zlib
 from dataclasses import dataclass, field
+from datetime import datetime
 from difflib import SequenceMatcher, get_close_matches
 from typing import Dict, List, Optional, Tuple
 
@@ -727,3 +732,85 @@ def build_whatsapp_link_safe(phone_e164: str, build_msg_fn) -> Tuple[str, str, s
         "⚠️ الفاتورة كبيرة جداً على لينك واتساب — "
         "استخدم PDF أو انسخ الرسالة يدوي"
     )
+
+
+# ------------------------------------------------------------
+# 9) Smart Offer Engine
+#    فحص استباقي: هل الفاتورة الحالية فيها تحاليل مفرّقة ممكن تتلمّ
+#    في باقة أرخص، حتى لو الموظف ما حاولش يضيف الباقة نفسها أبداً؟
+#    (check_add بيتشيك وقت الإضافة بس؛ الدالة دي بتفحص الفاتورة كلها
+#    في أي وقت — نفس منطق الحساب، سطح تاني)
+# ------------------------------------------------------------
+
+def suggest_bundle_offers(items: List[dict], idx: PriceIndex,
+                          min_components: int = 2) -> List[dict]:
+    """
+    بترجّع قائمة اقتراحات ترتيب تنازلي حسب التوفير:
+    [{"bundle": TestRec, "matched_names": [...], "spent": int, "saving": int}, ...]
+    بيرشّح: الباقة مش مضافة بالفعل + على الأقل min_components تحاليل
+    من مكوّناتها موجودين + فيه توفير فعلي (مش مجرد نفس السعر أو أغلى).
+    """
+    in_invoice = {norm(i["name"]): i for i in items}
+    already = set(in_invoice.keys())
+    out = []
+    for b in idx.bundles:
+        if b.key in already:
+            continue
+        matched = [in_invoice[k] for k in b.component_keys if k in in_invoice]
+        if len(matched) < min_components:
+            continue
+        spent = sum(int(m["price"]) for m in matched)
+        saving = spent - b.price
+        if saving <= 0:
+            continue
+        out.append({
+            "bundle": b,
+            "matched_names": [m["name"] for m in matched],
+            "spent": spent,
+            "saving": saving,
+        })
+    out.sort(key=lambda x: -x["saving"])
+    return out
+
+
+# ------------------------------------------------------------
+# 10) Quote ID + Save/Resume Quote
+#     رقم تتبّع لكل عرض سعر + إمكانية حفظه كلينك (بيرجّع نفس الفاتورة
+#     لو العميل فتحه تاني خلال 24-48 ساعة). بدون قاعدة بيانات: الحالة
+#     كلها متدمّجة (compressed + base64) جوه اللينك نفسه.
+# ------------------------------------------------------------
+
+def generate_quote_id() -> str:
+    """OR-YYMMDD-NNNN — للمتابعة الداخلية بس، مش بتتحط في رسالة العميل."""
+    now = datetime.now()
+    return f"OR-{now.strftime('%y%m%d')}-{random.randint(0, 9999):04d}"
+
+
+def encode_quote(payload: dict) -> str:
+    """
+    قاموس -> نص مضغوط آمن للـ URL (بدون '=' padding عشان ما يلخبطش
+    query string). بيتحط في query param ?q=
+    """
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    b64 = base64.urlsafe_b64encode(zlib.compress(raw, 9)).decode("ascii")
+    return b64.rstrip("=")
+
+
+def decode_quote(token: str) -> Optional[dict]:
+    """عكس encode_quote. بترجّع None لو التوكن تالف/معدَّل يدوي."""
+    try:
+        padded = token + "=" * (-len(token) % 4)
+        raw = zlib.decompress(base64.urlsafe_b64decode(padded.encode("ascii")))
+        data = json.loads(raw.decode("utf-8"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def quote_age_hours(created_iso: str) -> Optional[float]:
+    """كام ساعة من وقت حفظ العرض. None لو التاريخ مش قابل للقراءة."""
+    try:
+        created = datetime.fromisoformat(created_iso)
+        return (datetime.now() - created).total_seconds() / 3600.0
+    except Exception:
+        return None

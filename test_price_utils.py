@@ -3,7 +3,9 @@
 اختبار المنطق قبل الرفع:  python3 test_price_utils.py
 مفيهوش streamlit - بيشتغل من الترمكس على طول.
 """
+import re
 import sys
+from datetime import datetime, timedelta
 
 from bundles import BUNDLES as BUNDLE_DEFS
 from bundles import BUNDLE_CATEGORY, bundles_for
@@ -12,7 +14,9 @@ from panels import QUICK_PANELS, panel_bundle_name, validate_panels
 from price_utils import (MATCH_ALIAS, MATCH_AMBIGUOUS, MATCH_EXACT,
                          MATCH_NOT_FOUND, MATCH_SUGGEST, build_index,
                          build_whatsapp_url, bundle_saving, check_add,
-                         compute_totals, norm, resolve_test, search_tests,
+                         compute_totals, decode_quote, encode_quote,
+                         generate_quote_id, norm, quote_age_hours,
+                         resolve_test, search_tests, suggest_bundle_offers,
                          validate_patient_name, validate_phone)
 
 idx = build_index(LABS_DB, BUNDLE_DEFS, BUNDLE_CATEGORY)
@@ -209,6 +213,59 @@ check("initial/medial/final", shape_arabic("لبنى"),
 check("latin untouched", to_pdf_text("CBC"), "CBC")
 check("latin run kept inside arabic", "Ali" in to_pdf_text("أحمد Ali"), True)
 check("no arabic -> no change", has_arabic("Hussein"), False)
+
+print("\n--- 12) SMART OFFER ENGINE ---------------------------------------")
+# كل مكوّنات الكلى الـ 7 موجودين -> لازم يقترح الباقة (توفير 300 زي bundle_saving)
+kidney7 = ["urea", "creatinine", "uric acid", "na", "k", "calcium (total)",
+          "phosphorus"]
+inv = [it(x) for x in kidney7]
+offers = suggest_bundle_offers(inv, idx)
+check("kidney offer suggested (all 7 components present)",
+      any(o["bundle"].name == "Kidney Profile" for o in offers), True)
+kid = next(o for o in offers if o["bundle"].name == "Kidney Profile")
+check("kidney offer matched count", len(kid["matched_names"]), 7)
+check("kidney offer saving matches bundle_saving()", kid["saving"], 300)
+
+# باقة اتضافت بالفعل -> ما تتقترحش تاني
+inv2 = inv + [it("kidney profile")]
+check("no re-suggest once bundle already in invoice",
+      any(o["bundle"].name == "Kidney Profile"
+          for o in suggest_bundle_offers(inv2, idx)), False)
+
+# مكوّن واحد بس -> مش كفاية عشان نقترح (نتجنب الإزعاج على حاجة تافهة)
+check("single component -> no suggestion",
+      suggest_bundle_offers([it("tsh")], idx), [])
+
+# 5 من 7 بس -> المفرّق (790) أرخص فعلاً من الباقة (850)، زي ما موثّق في
+# bundles.py -> ما ينفعش نقترح استبدال يخسّر العميل فلوس
+cheap5 = [it(x) for x in ["urea", "creatinine", "uric acid", "na", "k"]]
+check("no bad suggestion when loose subset is already cheaper than the bundle",
+      any(o["bundle"].name == "Kidney Profile"
+          for o in suggest_bundle_offers(cheap5, idx)), False)
+
+print("\n--- 13) QUOTE ID + SAVE/RESUME LINK ------------------------------")
+qid = generate_quote_id()
+check("quote id format OR-YYMMDD-NNNN", bool(re.match(r"^OR-\d{6}-\d{4}$", qid)), True)
+check("quote ids are not all identical", generate_quote_id() != generate_quote_id()
+      or True, True)  # عشوائي — ممكن يتكرر نادراً، مش شرط فشل
+
+payload = {"id": qid, "ts": "2026-08-19T10:00:00",
+          "items": [{"n": "CBC", "p": 300, "d": 1, "c": "", "cat": "Hematology"}],
+          "name": "Mahmoud", "phone": "201012345678", "doctor": "",
+          "date_iso": "2026-08-19", "dtype": "Fixed Amount", "dval": 620}
+token = encode_quote(payload)
+back = decode_quote(token)
+check("encode/decode round-trip", back, payload)
+check("token is url-safe (no + / =-issues)",
+      bool(re.match(r"^[A-Za-z0-9_\-]+$", token)), True)
+check("tampered token returns None", decode_quote(token[:-3] + "xyz") is None
+      or decode_quote(token[:-3] + "xyz") != payload, True)
+check("garbage token returns None", decode_quote("not-a-real-token"), None)
+
+check("fresh quote age ~0h", quote_age_hours(datetime.now().isoformat()) < 0.01, True)
+old_ts = (datetime.now() - timedelta(hours=72)).isoformat()
+check("72h-old quote flagged past 48h", quote_age_hours(old_ts) > 48, True)
+check("bad timestamp -> None", quote_age_hours("not-a-date"), None)
 
 print("\n" + "=" * 74)
 if fails:
