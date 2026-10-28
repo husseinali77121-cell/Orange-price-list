@@ -12,6 +12,7 @@ from datetime import date, datetime
 from io import BytesIO
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 st.set_page_config(page_title="Orange Lab - Invoice", page_icon="🍊", layout="wide")
 
@@ -47,7 +48,7 @@ from panels import (BRANCHES, DEFAULT_BRANCH, QUICK_PANELS, panel_bundle_name,
                     validate_panels)
 from price_utils import (MATCH_ALIAS, MATCH_AMBIGUOUS, MATCH_EXACT,
                          MATCH_NOT_FOUND, MATCH_SUGGEST, build_index,
-                         build_whatsapp_link_safe, build_whatsapp_message,
+                         MAX_WA_URL, build_whatsapp_link_safe, build_whatsapp_message,
                          build_whatsapp_url, bundle_saving, check_add,
                          compute_totals, decode_quote, encode_quote,
                          generate_quote_id, parse_bulk_tests, quote_age_hours,
@@ -56,6 +57,8 @@ from price_utils import (MATCH_ALIAS, MATCH_AMBIGUOUS, MATCH_EXACT,
                          validate_patient_name, validate_phone)
 from tracking import (LOST_SALE_REASONS, REFERRAL_SOURCES, make_event,
                       month_key, summarize_events)
+from marketing import MARKETING_KINDS, build_marketing_message, share_url
+from voice import VOICE_ARIA, mic_html, split_voice_command
 from github_store import (GithubEventStore, GithubStoreError, events_path,
                           store_from_secrets)
 
@@ -66,6 +69,7 @@ MAPS_URL = "https://maps.app.goo.gl/vLdtTk9KctLXtpE4A?g_st=ac"
 # TODO: حط هنا لينك التطبيق المنشور فعلياً على Streamlit Cloud
 # (من غير كده زرار "حفظ العرض" هيولّد لينك مايفتحش صح)
 APP_URL = "https://REPLACE-WITH-YOUR-STREAMLIT-APP-URL"
+REVIEW_URL = ""   # لينك تقييم المعمل على Google Maps — بيظهر في رسالة «طلب تقييم»
 
 
 # ------------------------------------------------------------
@@ -109,6 +113,8 @@ DEFAULTS = {
     "prefer_bundle": True,
     "discount_type": "Percentage",
     "discount_value": 0.0,
+    "disc_gen": 0,            # بيتغيّر عشان خانة الخصم تتبني من جديد (reset/تغيير النوع)
+    "voice_gen": 0,           # بيتغيّر عشان خانة الصوت تتفضّى بعد كل أمر
     "p_name": "",
     "p_phone": "",
     "p_doctor": "",
@@ -548,6 +554,40 @@ if st.session_state.conflict:
                 st.session_state.conflict = None
                 st.rerun()
 
+# ---- 🎤 إضافة بالأمر الصوتي ----
+with st.expander("🎤 إضافة بالصوت (قول اسم التحليل)"):
+    _vl = st.radio("لغة الكلام", ["English", "عربي"], horizontal=True, key="voice_lang")
+    components.html(mic_html("en-US" if _vl == "English" else "ar-EG"), height=100)
+    vtxt = st.text_input(VOICE_ARIA, key=f"voice_text_{st.session_state.voice_gen}",
+                         label_visibility="collapsed",
+                         placeholder="الكلام هيتكتب هنا — أو اكتب واضغط Enter")
+    st.caption("قول مثلاً: CBC — أو أكتر من تحليل: CBC and ESR and glucose")
+
+if vtxt.strip():
+    _whole = resolve_test(vtxt, IDX)
+    _parts = [vtxt.strip()] if _whole.is_confident else split_voice_command(vtxt)
+    _recs, _choose, _missing = [], [], []
+    for _t in _parts:
+        _r = resolve_test(_t, IDX)
+        if _r.is_confident:
+            _recs.append(_r.best)
+        elif _r.candidates:
+            _choose.append((_t, _r.candidates[:6], _r.reason))
+        else:
+            _missing.append(_t)
+    if _recs:   # المؤكد بس بيتضاف تلقائي — نفس قاعدة البحث المكتوب
+        _a, _d, _c, _df = add_many(_recs, "voice")
+        if _a:
+            flash("success", "🎤 سمعت وأضفت: " + "، ".join(_a))
+        flash_panel_result("الأمر الصوتي", [], _d, _c, _df)
+    if _choose or _missing:
+        st.session_state.bulk = {"confident": [], "choose": _choose, "missing": _missing}
+        flash("warning", "🎤 في اسم محتاج تأكيدك — راجعه تحت في «الصق قائمة»")
+    if not _parts:
+        flash("warning", "🎤 مسمعتش اسم تحليل واضح — جرّب تاني")
+    st.session_state.voice_gen += 1
+    st.rerun()
+
 # ---- لصق قائمة تحاليل من رسالة العميل ----
 BULK = st.session_state.bulk
 
@@ -708,15 +748,20 @@ else:
         if dtype != st.session_state.discount_type:
             st.session_state.discount_type = dtype
             st.session_state.discount_value = 0.0
+            st.session_state.disc_gen += 1
             st.rerun()
     with d2:
-        sub = sum(i["price"] for i in items)
+        # الخانة ليها key ثابت وبتتزرع مرة واحدة بس: قبل كده كان `value=` بيتغيّر
+        # مع كل تعديل فـ Streamlit يعتبرها خانة جديدة ويرجّع القيمة القديمة.
+        # الحد الأقصى ثابت (compute_totals بيقصّ الخصم على الإجمالي أصلاً).
+        _dk = f"disc_{dtype}_{st.session_state.disc_gen}"
+        if _dk not in st.session_state:
+            st.session_state[_dk] = float(st.session_state.discount_value)
         st.session_state.discount_value = st.number_input(
             "خصم (%)" if dtype == "Percentage" else f"خصم ({CURRENCY})",
             min_value=0.0,
-            max_value=100.0 if dtype == "Percentage" else float(max(sub, 1)),
-            value=float(st.session_state.discount_value),
-            step=1.0 if dtype == "Percentage" else 10.0, format="%.0f")
+            max_value=100.0 if dtype == "Percentage" else 1_000_000.0,
+            step=1.0 if dtype == "Percentage" else 10.0, format="%.0f", key=_dk)
 
     totals = compute_totals(items, st.session_state.discount_value,
                             st.session_state.discount_type)
@@ -835,6 +880,7 @@ with s3:
                   "saved_link", "saved_at", "referral_source"):
             st.session_state[k] = DEFAULTS[k] if not isinstance(DEFAULTS[k], list) else []
         st.session_state.p_date = date.today()
+        st.session_state.disc_gen += 1
         st.session_state["_show_lost_reason"] = False
         st.query_params.clear()
         st.rerun()
@@ -985,3 +1031,35 @@ with st.expander("📊 إحصائيات الشهر ده"):
                           " · ".join(f"{r} ({c})" for r, c in _s["top_sources"][:3]))
         except GithubStoreError as e:
             st.caption(f"مقدرتش أجيب الإحصائيات دلوقتي: {e}")
+
+
+# ------------------------------------------------------------
+# 9) 📣 رسائل تسويقية (واتساب)
+#    قوالب جاهزة بتتبني من بيانات الفاتورة الحالية — عدّل النص قبل الإرسال
+# ------------------------------------------------------------
+
+with st.expander("📣 رسائل تسويقية (واتساب)"):
+    _rows = []
+    for _b in bundles_for(st.session_state.branch):
+        _rec = resolve_test(_b["name"], IDX).best
+        if _rec:
+            _rows.append({"name": _b["name"], "price": _rec.price,
+                          "saving": bundle_saving(_rec, IDX)[1]})
+    mk = st.selectbox("نوع الرسالة", list(MARKETING_KINDS),
+                      format_func=lambda k: MARKETING_KINDS[k])
+    ml = st.radio("لغة الرسالة", ["ar", "en"], horizontal=True, key="mk_lang")
+    _name = name_chk.value if name_chk.ok else st.session_state.p_name
+    _msg0 = build_marketing_message(
+        mk, ml, lab=LAB_NAME_AR, name=_name, total=totals["total"],
+        currency=CURRENCY, bundles=_rows, review_url=REVIEW_URL)
+    mk_msg = st.text_area("نص الرسالة (تقدر تعدّله)", value=_msg0, height=190,
+                          key=f"mk_txt_{mk}_{ml}")
+    _mphone = phone_chk.value if phone_chk.ok else ""
+    _murl = share_url(mk_msg, _mphone)
+    if len(_murl) > MAX_WA_URL:
+        st.warning("الرسالة طويلة على لينك واتساب — انسخها من تحت وابعتها يدوي")
+        st.code(mk_msg, language=None)
+    else:
+        st.link_button("📲 افتح واتساب بالرسالة دي", _murl, use_container_width=True)
+        if not _mphone:
+            st.caption("مفيش رقم عميل صالح — واتساب هيسيبك تختار جهة الاتصال")
