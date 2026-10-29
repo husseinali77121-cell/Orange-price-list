@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import json
 import random
 import re
@@ -786,25 +788,75 @@ def generate_quote_id() -> str:
     return f"OR-{now.strftime('%y%m%d')}-{random.randint(0, 9999):04d}"
 
 
-def encode_quote(payload: dict) -> str:
+def _sign(body: str, secret: str) -> str:
+    mac = hmac.new(secret.encode("utf-8"), body.encode("utf-8"), hashlib.sha256).digest()[:16]
+    return base64.urlsafe_b64encode(mac).decode("ascii").rstrip("=")
+
+
+def encode_quote(payload: dict, secret: str = "") -> str:
     """
-    قاموس -> نص مضغوط آمن للـ URL (بدون '=' padding عشان ما يلخبطش
-    query string). بيتحط في query param ?q=
+    قاموس -> نص مضغوط آمن للـ URL (بدون '=' padding)، بيتحط في ?q=
+    لو secret موجود بيتضاف توقيع HMAC بعد نقطة (body.sig): ده بيمنع التعديل
+    على السعر/الخصم في اللينك. التوقيع مش تشفير — المحتوى لسه مقروء.
     """
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    b64 = base64.urlsafe_b64encode(zlib.compress(raw, 9)).decode("ascii")
-    return b64.rstrip("=")
+    body = base64.urlsafe_b64encode(zlib.compress(raw, 9)).decode("ascii").rstrip("=")
+    return f"{body}.{_sign(body, secret)}" if secret else body
 
 
-def decode_quote(token: str) -> Optional[dict]:
-    """عكس encode_quote. بترجّع None لو التوكن تالف/معدَّل يدوي."""
+def decode_quote_checked(token: str, secret: str = ""):
+    """
+    بترجّع (data, status). status: ok | unverified (مفيش secret نتحقق بيه) |
+    unsigned (فيه secret واللينك من غير توقيع) | bad_signature | corrupt.
+    data = None في أي حالة غير ok/unverified.
+    """
+    body, dot, sig = (token or "").partition(".")
+    if secret:
+        if not dot:
+            return None, "unsigned"
+        if not hmac.compare_digest(sig.encode("utf-8"), _sign(body, secret).encode("utf-8")):
+            return None, "bad_signature"
     try:
-        padded = token + "=" * (-len(token) % 4)
+        padded = body + "=" * (-len(body) % 4)
         raw = zlib.decompress(base64.urlsafe_b64decode(padded.encode("ascii")))
         data = json.loads(raw.decode("utf-8"))
-        return data if isinstance(data, dict) else None
     except Exception:
-        return None
+        return None, "corrupt"
+    if not isinstance(data, dict):
+        return None, "corrupt"
+    return data, ("ok" if secret else "unverified")
+
+
+def decode_quote(token: str, secret: str = "") -> Optional[dict]:
+    """عكس encode_quote. بترجّع None لو التوكن تالف/معدَّل/من غير توقيع مطلوب."""
+    return decode_quote_checked(token, secret)[0]
+
+
+def reprice_saved_items(saved: list, idx: PriceIndex):
+    """
+    بنود عرض محفوظ -> بنود بأسعار القائمة الحالية (السعر المخزّن في اللينك
+    مش مصدر حقيقة). بترجّع (items, changed, missing):
+      changed = [(name, old, new)] · missing = أسماء مش موجودة في القائمة دلوقتي
+      (بتفضل بسعرها القديم وبتتعلّم عشان المراجعة).
+    """
+    items, changed, missing = [], [], []
+    for it in saved or []:
+        try:
+            name, old = str(it["n"]), int(it["p"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        hits = idx.get(name)
+        rec = next((h for h in hits if h.category == it.get("cat")), hits[0] if hits else None)
+        if rec is None:
+            missing.append(name)
+            items.append({"name": name, "price": old, "result_days": it.get("d"),
+                          "collection_notes": it.get("c", ""), "category": it.get("cat", "")})
+            continue
+        if rec.price != old:
+            changed.append((rec.name, old, rec.price))
+        items.append({"name": rec.name, "price": rec.price, "result_days": rec.result_days,
+                      "collection_notes": rec.collection_notes or "", "category": rec.category})
+    return items, changed, missing
 
 
 def quote_age_hours(created_iso: str) -> Optional[float]:

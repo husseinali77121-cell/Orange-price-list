@@ -90,6 +90,23 @@ def month_key(dt: Optional[datetime] = None) -> str:
 # تلخيص مجموعة أحداث (ملف شهر واحد أو أكتر مجمّعين) -> أرقام Dashboard
 # ------------------------------------------------------------
 
+def _final_decisions(events: List[dict]) -> Dict[str, dict]:
+    """
+    آخر قرار لكل عرض (converted أو lost_sale) — الأحدث بالوقت يكسب، والتعادل
+    للأحدث في الترتيب. كده الضغط مرتين ماكررش الإيراد، وتغيير القرار (فات ثم
+    اتباع) بيتحسب مرة واحدة بس، حتى لو الأحداث المكررة متخزّنة فعلاً.
+    """
+    best: Dict[str, tuple] = {}
+    for i, e in enumerate(events):
+        if e["type"] not in ("converted", "lost_sale"):
+            continue
+        qid = e.get("quote_id") or ""
+        key = (e.get("ts", ""), i)
+        if qid not in best or key >= best[qid][0]:
+            best[qid] = (key, e)
+    return {q: v[1] for q, v in best.items()}
+
+
 def summarize_events(events: List[dict],
                      bundle_names: Optional[set] = None) -> dict:
     """
@@ -116,27 +133,27 @@ def summarize_events(events: List[dict],
             if "items" in e:
                 quote_items[qid] = e["items"]
 
+    final = _final_decisions(events)
     quotes = sum(1 for s in by_quote.values() if "quote" in s)
-    lost = sum(1 for s in by_quote.values() if "lost_sale" in s)
-    converted = sum(1 for s in by_quote.values() if "converted" in s)
+    lost = sum(1 for e in final.values() if e["type"] == "lost_sale")
+    converted = sum(1 for e in final.values() if e["type"] == "converted")
     # عرض اتعمله quote بس، ولسه ماتحددش مصيره (لا اتباع ولا اتفوّت)
-    pending = sum(1 for s in by_quote.values()
-                  if "quote" in s and "lost_sale" not in s and "converted" not in s)
+    pending = sum(1 for q, s in by_quote.items() if "quote" in s and q not in final)
 
     decided = converted + lost
     conversion_pct = round(100.0 * converted / decided, 1) if decided else 0.0
 
     reason_counts: Dict[str, int] = {}
-    for e in events:
+    for e in final.values():
         if e["type"] == "lost_sale":
             r = e.get("reason") or "مش عارفين"
             reason_counts[r] = reason_counts.get(r, 0) + 1
     top_lost_reasons = sorted(reason_counts.items(), key=lambda x: -x[1])
 
     source_counts: Dict[str, int] = {}
-    for e in events:
-        if e["type"] == "quote":
-            s = e.get("referral_source") or "غير محدد"
+    for s_ in by_quote.values():          # مرة واحدة لكل عرض
+        if "quote" in s_:
+            s = s_["quote"].get("referral_source") or "غير محدد"
             source_counts[s] = source_counts.get(s, 0) + 1
     top_sources = sorted(source_counts.items(), key=lambda x: -x[1])
 
@@ -149,23 +166,24 @@ def summarize_events(events: List[dict],
     package_stats: Dict[str, dict] = {}
     if bundle_names:
         for qid, names in quote_items.items():
-            slot = by_quote.get(qid, {})
+            fin = final.get(qid)
             for n in set(names):
                 if n not in bundle_names:
                     continue
                 ps = package_stats.setdefault(
                     n, {"quotes": 0, "converted": 0, "lost": 0})
                 ps["quotes"] += 1
-                if "converted" in slot:
+                if fin and fin["type"] == "converted":
                     ps["converted"] += 1
-                elif "lost_sale" in slot:
+                elif fin and fin["type"] == "lost_sale":
                     ps["lost"] += 1
         for ps in package_stats.values():
             dec = ps["converted"] + ps["lost"]
             ps["conversion_pct"] = round(100.0 * ps["converted"] / dec, 1) if dec else 0.0
 
-    revenue_lost = sum(int(e.get("total", 0)) for e in events if e["type"] == "lost_sale")
-    revenue_converted = sum(int(e.get("total", 0)) for e in events
+    revenue_lost = sum(int(e.get("total", 0)) for e in final.values()
+                       if e["type"] == "lost_sale")
+    revenue_converted = sum(int(e.get("total", 0)) for e in final.values()
                             if e["type"] == "converted")
 
     return {

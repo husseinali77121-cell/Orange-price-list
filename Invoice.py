@@ -50,10 +50,11 @@ from price_utils import (MATCH_ALIAS, MATCH_AMBIGUOUS, MATCH_EXACT,
                          MATCH_NOT_FOUND, MATCH_SUGGEST, build_index,
                          MAX_WA_URL, build_whatsapp_link_safe, build_whatsapp_message,
                          build_whatsapp_url, bundle_saving, check_add,
-                         compute_totals, decode_quote, encode_quote,
+                         compute_totals, decode_quote_checked, encode_quote,
                          generate_quote_id, parse_bulk_tests, quote_age_hours,
                          format_phone_display, name_is_pdf_safe, norm,
-                         resolve_test, search_tests, suggest_bundle_offers,
+                         reprice_saved_items, resolve_test, search_tests,
+                         suggest_bundle_offers,
                          validate_patient_name, validate_phone)
 from tracking import (LOST_SALE_REASONS, REFERRAL_SOURCES, make_event,
                       month_key, summarize_events)
@@ -99,6 +100,17 @@ def get_event_store():
     return store_from_secrets(st.secrets)
 
 
+def get_quote_secret() -> str:
+    """مفتاح توقيع لينكات العروض (secrets: quote_secret). فاضي = التوقيع مقفول."""
+    try:
+        return str(st.secrets.get("quote_secret", "") or "")
+    except Exception:
+        return ""
+
+
+QUOTE_SECRET = get_quote_secret()
+
+
 # ------------------------------------------------------------
 # Session state
 # ------------------------------------------------------------
@@ -140,13 +152,13 @@ if not st.session_state.get("_quote_link_checked"):
     st.session_state["_quote_link_checked"] = True
     q = st.query_params.get("q")
     if q:
-        data = decode_quote(q)
+        data, _qstatus = decode_quote_checked(q, QUOTE_SECRET)
         if data:
+            # السعر المخزّن في اللينك مش مصدر حقيقة — بنعيد التسعير من القائمة الحالية
+            _qitems, _qchg, _qmiss = reprice_saved_items(data.get("items", []), IDX)
             st.session_state["items"] = [
-                {"uid": uuid.uuid4().hex[:8], "name": it["n"], "price": int(it["p"]),
-                 "result_days": it.get("d"), "collection_notes": it.get("c", ""),
-                 "category": it.get("cat", ""), "source": "saved_quote"}
-                for it in data.get("items", [])
+                {"uid": uuid.uuid4().hex[:8], **it, "source": "saved_quote"}
+                for it in _qitems
             ]
             st.session_state["p_name"] = data.get("name", "")
             st.session_state["p_phone"] = data.get("phone", "")
@@ -165,8 +177,18 @@ if not st.session_state.get("_quote_link_checked"):
                       f"(أكتر من 48 ساعة) — راجع الأسعار قبل ما تأكّده للعميل")
             else:
                 flash("info", f"📂 اتفتح عرض محفوظ: {data.get('id','')}")
+            if _qchg:
+                flash("warning", "💱 الأسعار اتحدّثت من القائمة الحالية: " + "، ".join(
+                    f"{n} ({o:,} ← {pr:,})" for n, o, pr in _qchg))
+            if _qmiss:
+                flash("warning", "⚠️ مش موجودين في القائمة دلوقتي (لسه بسعرهم القديم): "
+                                 + "، ".join(_qmiss))
+            if _qstatus == "unverified":
+                flash("warning", "🔓 توقيع اللينكات مش متفعّل — سلامة اللينك ده ماتتأكدتش")
         else:
-            flash("error", "⚠️ لينك العرض ده تالف أو معدَّل — مش هينفتح")
+            flash("error", "⚠️ لينك قديم من غير توقيع — اتقفل لحماية البيانات، اعمل العرض من جديد"
+                  if _qstatus == "unsigned" else
+                  "⚠️ لينك العرض ده تالف أو معدَّل — مش هينفتح")
 
 if not st.session_state["quote_id"]:
     st.session_state["quote_id"] = generate_quote_id()
@@ -915,10 +937,13 @@ with sv1:
             "dtype": st.session_state.discount_type,
             "dval": st.session_state.discount_value,
         }
-        st.session_state.saved_link = f"{APP_URL}/?q={encode_quote(payload)}"
+        st.session_state.saved_link = f"{APP_URL}/?q={encode_quote(payload, QUOTE_SECRET)}"
         st.session_state.saved_at = payload["ts"]
         st.rerun()
 
+if st.session_state.saved_link and not QUOTE_SECRET:
+    st.warning("🔓 اللينك ده من غير توقيع — أضف quote_secret في Streamlit Secrets "
+               "عشان محدّش يقدر يعدّل السعر أو الخصم فيه")
 if st.session_state.saved_link:
     with sv2:
         st.text_input("لينك العرض — صالح 48 ساعة (شير له، افتحه تاني يرجّع نفس الفاتورة)",
@@ -957,15 +982,21 @@ st.divider()
 
 st.markdown("#### 📞 قرار العميل")
 
+_dkey = f"_decided_{st.session_state.quote_id}"      # آخر قرار اتسجّل للعرض ده
+_decided = st.session_state.get(_dkey)
+
 oc1, oc2 = st.columns(2)
 with oc1:
-    if st.button("✅ اتباع / حجز", use_container_width=True, disabled=not items):
+    if st.button("✅ اتباع / حجز" + (" ✔" if _decided == "converted" else ""),
+                 use_container_width=True,
+                 disabled=not items or _decided == "converted"):
         store = get_event_store()
         if store:
             try:
                 store.append(events_path(month_key()), make_event(
                     "converted", st.session_state.quote_id,
                     branch=st.session_state.branch, total=totals["total"]))
+                st.session_state[_dkey] = "converted"
                 flash("success", "✅ اتسجّل كعملية بيع — تمام")
             except GithubStoreError as e:
                 flash("error", f"مقدرتش أسجّل ده: {e}")
@@ -973,7 +1004,9 @@ with oc1:
             flash("warning", "تتبّع العروض مش متظبط في الإعدادات (secrets)")
         st.rerun()
 with oc2:
-    if st.button("❌ هيفوّت", use_container_width=True, disabled=not items):
+    if st.button("❌ هيفوّت" + (" ✔" if _decided == "lost_sale" else ""),
+                 use_container_width=True,
+                 disabled=not items or _decided == "lost_sale"):
         st.session_state["_show_lost_reason"] = True
         st.rerun()
 
@@ -990,6 +1023,7 @@ if st.session_state.get("_show_lost_reason"):
                         "lost_sale", st.session_state.quote_id,
                         branch=st.session_state.branch, reason=reason,
                         note=note, total=totals["total"]))
+                    st.session_state[_dkey] = "lost_sale"
                     flash("success", f"اتسجّل: {reason}")
                 except GithubStoreError as e:
                     flash("error", f"مقدرتش أسجّل ده: {e}")
