@@ -203,12 +203,16 @@ def to_pdf_text(text: str) -> str:
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
+_PROJECT_FONTS = [
+    os.path.join(_HERE, d, f)
+    for d in ("fonts", "Fonts")          # لينكس حسّاس لحالة الحروف: المجلد في الريبو اسمه Fonts
+    for f in ("Amiri-Regular.ttf", "NotoNaskhArabic-Regular.ttf",
+              "Cairo-Regular.ttf", "DejaVuSans.ttf")
+]
+
 FONT_CANDIDATES = [
     # 1) خط مرفوع مع المشروع - الأفضل: نفس الشكل في كل مكان
-    os.path.join(_HERE, "fonts", "Amiri-Regular.ttf"),
-    os.path.join(_HERE, "fonts", "NotoNaskhArabic-Regular.ttf"),
-    os.path.join(_HERE, "fonts", "Cairo-Regular.ttf"),
-    os.path.join(_HERE, "fonts", "DejaVuSans.ttf"),
+    *_PROJECT_FONTS,
     # 2) Streamlit Cloud / Debian / Ubuntu
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/truetype/freefont/FreeSerif.ttf",

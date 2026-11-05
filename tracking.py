@@ -39,7 +39,7 @@ LOST_SALE_REASONS = [
     "مش عارفين",
 ]
 
-EVENT_TYPES = ("quote", "lost_sale", "converted")
+EVENT_TYPES = ("quote", "lost_sale", "converted", "campaign")
 
 
 # ------------------------------------------------------------
@@ -50,10 +50,12 @@ def make_event(event_type: str, quote_id: str, branch: str = "",
                referral_source: str = "", reason: str = "",
                note: str = "", total: int = 0, count: int = 0,
                items: Optional[List[str]] = None,
-               now: Optional[datetime] = None) -> dict:
+               now: Optional[datetime] = None,
+               meta: Optional[dict] = None) -> dict:
     """
     event_type: "quote" (اتجهّز/اتبعت) | "lost_sale" (ماتحولش) |
-                "converted" (اتباع فعلاً)
+                "converted" (اتباع فعلاً) | "campaign" (تصميم إعلاني اتنزّل/اتشارك —
+                quote_id هنا = كود الحملة، والتفاصيل في meta)
     items: أسماء التحاليل/الباقات في الفاتورة — بتتحط مع "quote" بس
            (لتحليل "أكتر التحاليل طلباً" و"نسبة تحويل كل باقة" لاحقاً)
     """
@@ -78,6 +80,8 @@ def make_event(event_type: str, quote_id: str, branch: str = "",
         ev["count"] = int(count)
     if items:
         ev["items"] = list(items)
+    if meta:
+        ev["meta"] = dict(meta)
     return ev
 
 
