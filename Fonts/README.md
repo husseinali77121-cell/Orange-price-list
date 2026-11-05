@@ -13,3 +13,8 @@
 ## للشكل الأحسن
 حمّل **Amiri** أو **Noto Naskh Arabic** من Google Fonts وحط الـ `.ttf`
 هنا. DejaVu بيشتغل صح بس شكله مش نسخي.
+
+## Marketing Studio
+نفس المجلد بيستخدمه الاستوديو. الأولوية للخط البولد: `Cairo-Black` ← `Cairo-Bold` ←
+`Tajawal-ExtraBold` ← `Tajawal-Bold` ← `Almarai-Bold` ← `NotoKufiArabic-Bold` ← DejaVu.
+الخط العادي: `Cairo-Regular` / `Tajawal-Regular` / `Almarai-Regular`. (كلها مجانية من Google Fonts.)
