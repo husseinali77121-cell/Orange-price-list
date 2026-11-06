@@ -10,6 +10,8 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
+from navigation import render_nav
+
 from bundles import BUNDLES as BUNDLE_DEFS
 from bundles import BUNDLE_CATEGORY
 from github_store import GithubStoreError, read_events_range, store_from_secrets
@@ -31,6 +33,7 @@ IDX = load_index()
 BUNDLE_NAMES = {b.name for b in IDX.bundles}
 
 st.markdown("## 📊 Marketing Dashboard")
+render_nav(st, "pages/1_Dashboard.py")
 st.caption("قراءة بس — من غير ما يأثّر على شغل صفحة الفاتورة")
 require_access(st, "لوحة المبيعات (أرقام الإيراد ومصادر العملاء)")
 

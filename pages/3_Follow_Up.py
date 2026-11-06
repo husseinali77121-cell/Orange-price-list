@@ -9,6 +9,8 @@ from datetime import datetime, timedelta
 
 import streamlit as st
 
+from navigation import render_nav
+
 from access import require_access, secret_bool
 from brand import LAB_NAME_AR
 from github_store import (GithubStoreError, events_path, read_events_range,
@@ -20,6 +22,7 @@ from tracking import (LOST_SALE_REASONS, followup_queue, make_event, month_key,
 
 st.set_page_config(page_title="Orange Lab - متابعة", page_icon="📞", layout="wide")
 st.markdown("## 📞 متابعة النهاردة")
+render_nav(st, "pages/3_Follow_Up.py")
 require_access(st, "صفحة المتابعة")
 
 store = store_from_secrets(st.secrets)

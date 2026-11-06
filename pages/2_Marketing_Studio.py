@@ -7,7 +7,6 @@
 #  ما يتعارضش مع السعر الفعلي.
 # ============================================================
 
-import base64
 import io
 import json
 import zipfile
@@ -25,10 +24,12 @@ from github_store import GithubStoreError, events_path, store_from_secrets
 from labs_price_list import LABS_DB
 from marketing import share_url
 from marketing_templates import (PRESETS, SAMPLE_PHOTOS, SIZE_LABELS, SIZES,
-                                 TEMPLATES, active_font_name, build_caption,
+                                 TEMPLATES, build_caption, font_status,
                                  make_campaign_id, render_template,
                                  to_jpeg_bytes, to_png_bytes)
+from navigation import render_nav
 from panels import BRANCHES, DEFAULT_BRANCH
+from share_widget import share_button_html
 from price_utils import MAX_WA_URL, build_index, bundle_saving, resolve_test
 from promotions import PROMO_PATH, active_promotions
 from tracking import make_event, month_key
@@ -182,6 +183,7 @@ st.session_state.setdefault("ms_size", "post")
 st.session_state.setdefault("ms_logged", set())
 
 st.markdown("## 🎨 Marketing Studio")
+render_nav(st, "pages/2_Marketing_Studio.py")
 st.caption("اكتب العرض → اختار القالب → حمّل الصورة أو شاركها. الأسعار بتتسحب من الباقات.")
 
 with st.sidebar:
@@ -196,8 +198,13 @@ with st.sidebar:
     st.selectbox("الفرع", BRANCHES, key="ms_branch")
     st.text_input("رقم التواصل على التصميم", key="ms_phone")
     st.divider()
-    st.caption(f"🔤 الخط الحالي: {active_font_name(True)}")
-    if "DejaVu" in active_font_name(True):
+    fs_ = font_status()
+    st.caption(f"🔤 الخط: {fs_['bold']} · التشكيل: {'✅ raqm' if fs_['mode'] == 'raqm' else '⚠️ بديل'}")
+    if fs_["skipped"]:
+        st.warning("الخط " + "، ".join(fs_["skipped"]) + " اتخطّى لأن السيرفر مفيهوش FriBiDi "
+                   "(الحروف كانت هتطير). ضيف ملف `packages.txt` فيه السطر `libfribidi0` "
+                   "في جذر الريبو وأعد النشر، وبعدها الخط الجميل هيشتغل.")
+    elif "DejaVu" in fs_["bold"]:
         st.caption("للشكل الأقرب لتصميماتك: حط `Cairo-Bold.ttf` و`Cairo-Regular.ttf` "
                    "في مجلد `Fonts/` (تفاصيل في Fonts/README.md).")
     st.caption(f"🆔 كود الحملة: `{st.session_state['ms_cid']}`")
@@ -406,35 +413,10 @@ with right:
         s2.link_button("🔵 فيسبوك", fb, use_container_width=True)
 
     # مشاركة الصورة نفسها (Web Share API — الموبايل)
-    b64 = base64.b64encode(jpg).decode("ascii")
-    safe_caption = json.dumps(caption, ensure_ascii=False).replace("</", "<\\/")
-    components.html(f"""
-<button id="sh" style="width:100%;padding:12px;border:0;border-radius:10px;
- background:#E96D23;color:#fff;font-size:16px;font-weight:700;cursor:pointer">
- 📲 شارك الصورة نفسها (واتساب / فيسبوك / إنستجرام)</button>
-<div id="msg" style="font:13px sans-serif;color:#b26a00;margin-top:6px;direction:rtl"></div>
-<script>
-const B64 = "{b64}";
-const TEXT = {safe_caption};
-const msg = t => document.getElementById('msg').textContent = t;
-document.getElementById('sh').onclick = async () => {{
-  try {{
-    const bin = atob(B64), arr = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-    const file = new File([arr], "{fname}.jpg", {{type: "image/jpeg"}});
-    if (navigator.canShare && navigator.canShare({{files: [file]}})) {{
-      await navigator.share({{files: [file], text: TEXT}});
-    }} else {{
-      msg("المتصفح ده مش بيدعم مشاركة الصور — حمّل الصورة وابعتها يدوي.");
-    }}
-  }} catch (e) {{
-    if (e.name !== "AbortError") msg("المشاركة مش متاحة هنا — حمّل الصورة وابعتها يدوي.");
-  }}
-}};
-</script>
-""", height=90)
+    components.html(share_button_html(jpg, caption, f"{fname}.jpg"), height=90)
     st.caption("ℹ️ لينكات واتساب وفيسبوك بتحط **النص** بس — الويب ما بيسمحش يرفق صورة "
-               "تلقائي. للصورة: زرار «شارك الصورة» (على الموبايل) أو حمّلها وأرفقها.")
+               "تلقائي. للصورة: زرار «شارك الصورة» فوق، أو **اضغط مطوّلاً على الصورة** "
+               "← مشاركة/حفظ، أو حمّلها وأرفقها.")
 
     # كل المقاسات
     with st.expander("📦 كل المقاسات في ملف واحد (ZIP)"):

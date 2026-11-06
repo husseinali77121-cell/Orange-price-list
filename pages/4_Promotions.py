@@ -11,6 +11,8 @@ from datetime import date, timedelta
 
 import streamlit as st
 
+from navigation import render_nav
+
 from access import require_access
 from bundles import BUNDLES as BUNDLE_DEFS
 from bundles import BUNDLE_CATEGORY
@@ -25,6 +27,7 @@ from promotions import (PROMO_PATH, STATE_LABELS, drift_warnings, new_promotion,
 
 st.set_page_config(page_title="Orange Lab - العروض", page_icon="🎁", layout="wide")
 st.markdown("## 🎁 العروض وجودة الأسعار")
+render_nav(st, "pages/4_Promotions.py")
 require_access(st, "صفحة العروض")
 
 
