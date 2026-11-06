@@ -15,8 +15,9 @@ from bundles import BUNDLE_CATEGORY
 from github_store import GithubStoreError, read_events_range, store_from_secrets
 from labs_price_list import LABS_DB
 from panels import BRANCHES
+from access import require_access
 from price_utils import build_index
-from tracking import month_key, summarize_events
+from tracking import marketing_kpis, month_key, summarize_events
 
 st.set_page_config(page_title="Orange Lab - Dashboard", page_icon="📊", layout="wide")
 
@@ -31,6 +32,7 @@ BUNDLE_NAMES = {b.name for b in IDX.bundles}
 
 st.markdown("## 📊 Marketing Dashboard")
 st.caption("قراءة بس — من غير ما يأثّر على شغل صفحة الفاتورة")
+require_access(st, "لوحة المبيعات (أرقام الإيراد ومصادر العملاء)")
 
 store = store_from_secrets(st.secrets)
 if not store:
@@ -96,6 +98,7 @@ if not events:
     st.stop()
 
 s = summarize_events(events, bundle_names=BUNDLE_NAMES)
+kp = marketing_kpis(events)
 
 st.divider()
 
@@ -104,16 +107,31 @@ st.divider()
 # KPIs
 # ------------------------------------------------------------
 
-k1, k2, k3, k4, k5 = st.columns(5)
-k1.metric("عروض", s["quotes"])
-k2.metric("اتباعت", s["converted"])
-k3.metric("فاتت", s["lost"])
-k4.metric("لسه معلّقة", s["pending"])
-k5.metric("نسبة التحويل", f"{s['conversion_pct']}%")
+k1, k2, k3, k4, k5, k6 = st.columns(6)
+k1.metric("عروض اتجهّزت", s["quotes"])
+k2.metric("اتبعتت فعلاً", kp["sent"], help="الموظف أكّد الإرسال بزرار «تم الإرسال»")
+k3.metric("اتباعت / اتحجزت", s["converted"])
+k4.metric("فاتت", s["lost"])
+k5.metric("لسه معلّقة", s["pending"])
+k6.metric("نسبة التحويل", f"{s['conversion_pct']}%")
 
 r1, r2 = st.columns(2)
-r1.metric("💰 إيراد اتحقق (Converted)", f"{s['revenue_converted']:,} ج.م")
-r2.metric("💸 إيراد ضايع (Lost)", f"{s['revenue_lost']:,} ج.م")
+r1.metric("💰 قيمة العروض المؤكَّد حجزها", f"{s['revenue_converted']:,} ج.م",
+          help="قيمة العروض اللي اتسجّلت «اتباع / حجز» — مش بالضرورة المبلغ المحصّل فعلاً")
+r2.metric("📉 قيمة فرص البيع المفقودة", f"{s['revenue_lost']:,} ج.م",
+          help="قيمة العروض اللي فاتت — فرصة ضاعت مش إيراد محقّق")
+
+a1, a2, a3, a4 = st.columns(4)
+a1.metric("متوسط قيمة العرض", f"{kp['avg_quote_value']:,} ج.م")
+a2.metric("متوسط الخصم", f"{kp['avg_discount_pct']}%",
+          help="العروض القديمة قبل تسجيل الخصم بتتحسب من غير خصم")
+a3.metric("عملاء متكررين", f"{kp['repeat_pct']}%",
+          help=f"{kp['returning_customers']} من {kp['customers']} عميل (بالبصمة — من غير تخزين الأرقام)")
+a4.metric("متوسط الوقت للحجز",
+          f"{kp['avg_hours_to_convert']} ساعة" if kp["avg_hours_to_convert"] is not None else "—")
+if kp["prepared_not_sent"]:
+    st.caption(f"ℹ️ {kp['prepared_not_sent']} عرض اتجهّز ومحدّش أكّد إنه اتبعت — "
+               "دول مش داخلين في «اتبعتت فعلاً».")
 
 st.divider()
 
@@ -183,5 +201,51 @@ if s["top_lost_reasons"]:
         st.progress(pct / 100)
 else:
     st.caption("مفيش عروض اتسجّلت كـ 'فايتة' في الفترة دي")
+
+st.divider()
+
+# ------------------------------------------------------------
+# مقارنة الفروع
+# ------------------------------------------------------------
+
+st.markdown("#### 🏢 مقارنة الفروع")
+if kp["by_branch"]:
+    st.dataframe(pd.DataFrame([
+        {"الفرع": b, "عروض": v["quotes"], "اتبعتت": v["sent"], "اتباعت": v["converted"],
+         "فاتت": v["lost"], "نسبة التحويل": f"{v['conversion_pct']}%",
+         "قيمة مؤكَّدة": v["revenue"], "قيمة مفقودة": v["lost_value"]}
+        for b, v in sorted(kp["by_branch"].items())]),
+        use_container_width=True, hide_index=True)
+else:
+    st.caption("مفيش بيانات فروع كفاية")
+
+st.divider()
+
+# ------------------------------------------------------------
+# أداء الحملات + تكلفة اكتساب العميل (CAC)
+# ------------------------------------------------------------
+
+st.markdown("#### 🎯 أداء الحملات")
+camp = kp["campaign_stats"]
+if camp:
+    base = pd.DataFrame([
+        {"كود الحملة": cid, "عروض": v["quotes"], "اتباعت": v["converted"], "فاتت": v["lost"],
+         "نسبة التحويل %": v["conversion_pct"], "قيمة مؤكَّدة": v["revenue"], "تكلفة الإعلان (ج.م)": 0}
+        for cid, v in sorted(camp.items(), key=lambda x: -x[1]["revenue"])])
+    edited = st.data_editor(base, use_container_width=True, hide_index=True,
+                            disabled=[c for c in base.columns if c != "تكلفة الإعلان (ج.م)"],
+                            key="camp_editor")
+    spend = edited[edited["تكلفة الإعلان (ج.م)"] > 0]
+    if len(spend):
+        spend = spend.assign(**{"CAC (ج.م)": (spend["تكلفة الإعلان (ج.م)"] /
+                                              spend["اتباعت"].where(spend["اتباعت"] > 0)).round()})
+        st.dataframe(spend[["كود الحملة", "تكلفة الإعلان (ج.م)", "اتباعت", "CAC (ج.م)"]],
+                     use_container_width=True, hide_index=True)
+    st.caption("الحملة بتتربط بالعرض لما الموظف يكتب كود الحملة في صفحة الفاتورة. "
+               "التكلفة بتدخلها بإيدك هنا (مش بتتخزّن). مشاهدات ونقرات فيسبوك/جوجل "
+               "مش في البيانات دي — محتاجة تكامل مع المنصات.")
+else:
+    st.caption("لسه مفيش عروض مربوطة بكود حملة. حمّل تصميم من Marketing Studio، "
+               "وخلّي الموظف يكتب الكود في صفحة الفاتورة.")
 
 st.caption(f"({len(events)} حدث مسجّل من {start_m} لغاية {end_m})")

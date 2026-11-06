@@ -11,12 +11,14 @@ import base64
 import io
 import json
 import zipfile
+from datetime import date
 from urllib.parse import quote
 
 import streamlit as st
 import streamlit.components.v1 as components
 
 from brand import DEFAULT_PHONE, FACEBOOK_PAGE_URL, LAB_NAME_AR, MAPS_URL
+from campaign_library import CAMPAIGNS, DISCLAIMER, campaign_fields
 from bundles import BUNDLES as BUNDLE_DEFS
 from bundles import BUNDLE_CATEGORY, bundles_for
 from github_store import GithubStoreError, events_path, store_from_secrets
@@ -28,6 +30,7 @@ from marketing_templates import (PRESETS, SAMPLE_PHOTOS, SIZE_LABELS, SIZES,
                                  to_jpeg_bytes, to_png_bytes)
 from panels import BRANCHES, DEFAULT_BRANCH
 from price_utils import MAX_WA_URL, build_index, bundle_saving, resolve_test
+from promotions import PROMO_PATH, active_promotions
 from tracking import make_event, month_key
 
 st.set_page_config(page_title="Orange Lab - Marketing Studio", page_icon="🎨",
@@ -107,6 +110,65 @@ def fill_from_bundle(branch: str):
     st.session_state.pop("ms_cap_txt", None)
 
 
+def apply_library(branch: str):
+    """حملة من المكتبة الموسمية: القالب + النص + التحاليل المقترحة (والسعر من القائمة)."""
+    key = st.session_state.get("ms_lib")
+    if key not in CAMPAIGNS:
+        return
+    c = CAMPAIGNS[key]
+    f = campaign_fields(key)
+    st.session_state["ms_template"] = f.pop("template")
+    st.session_state["ms_photo_src"] = "sample"
+    st.session_state["ms_photo_sample"] = f.pop("photo", "sugar")
+    for k in FIELD_KEYS:
+        st.session_state[f"ms_{k}"] = f.get(k, DEFAULTS.get(k, ""))
+    retail = 0
+    for t in c.get("tests", []):
+        r = resolve_test(t, IDX).best
+        retail += r.price if r else 0
+    st.session_state["ms_lib_retail"] = retail
+    st.session_state["ms_lib_review"] = bool(c.get("review"))
+    st.session_state["ms_lib_key"] = key
+    st.session_state.pop("ms_ref_price", None)
+    st.session_state.pop("ms_cap_txt", None)
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def load_promos():
+    s = store_from_secrets(st.secrets)
+    if not s:
+        return []
+    try:
+        data, _ = s.read(PROMO_PATH)
+        return data if isinstance(data, list) else []
+    except GithubStoreError:
+        return []
+
+
+def fill_from_promo(branch: str):
+    """يملا من عرض شغّال من «إدارة العروض»: السعر الأصلي + سعر العرض + المدة."""
+    pid = st.session_state.get("ms_promo_pick")
+    p = next((x for x in active_promotions(load_promos(), branch, date.today())
+              if x["id"] == pid), None)
+    if not p:
+        return
+    b = next((x for x in BUNDLE_DEFS if x["name"] == p["target"]), None)
+    small, big = BUNDLE_AR.get(p["target"], ("عرض", p["target"]))
+    d = date.fromisoformat(p["end"])
+    st.session_state.update({
+        "ms_template": "offer", "ms_title_small": small, "ms_title_big": big,
+        "ms_subtitle": p["name"], "ms_badge_mode": "price", "ms_badge_top": "بسعر",
+        "ms_badge_value": str(p["promo_price"]), "ms_old_price": str(p["original_price"]),
+        "ms_badge_sub": "", "ms_badge_pill": p["target"],
+        "ms_list_title": "الباقة تشمل" if b else "العرض يشمل",
+        "ms_items": "\n".join(b["components"]) if b else p["target"],
+        "ms_valid_until": f"العرض ساري حتى {d.day}/{d.month}",
+        "ms_ref_price": p["promo_price"], "ms_ref_name": p["target"],
+        "ms_ref_saving": p["original_price"] - p["promo_price"],
+    })
+    st.session_state.pop("ms_cap_txt", None)
+
+
 # ------------------------------------------------------------
 # حالة أولية
 # ------------------------------------------------------------
@@ -127,6 +189,10 @@ with st.sidebar:
     st.selectbox("📂 ابدأ من مثال", list(PRESET_LABELS), key="ms_preset",
                  format_func=lambda k: PRESET_LABELS[k], index=None,
                  placeholder="اختار مثال جاهز…", on_change=on_preset_change)
+    st.selectbox("📚 مكتبة الحملات الموسمية", list(CAMPAIGNS), key="ms_lib",
+                 format_func=lambda k: CAMPAIGNS[k]["label"], index=None,
+                 placeholder="اختار حملة…", on_change=apply_library,
+                 args=(st.session_state.get("ms_branch", DEFAULT_BRANCH),))
     st.selectbox("الفرع", BRANCHES, key="ms_branch")
     st.text_input("رقم التواصل على التصميم", key="ms_phone")
     st.divider()
@@ -150,7 +216,22 @@ with left:
              format_func=lambda k: TEMPLATES[k])
     kind = st.session_state["ms_template"]
 
+    if st.session_state.get("ms_lib_review"):
+        st.warning("🩺 محتوى طبي — راجعه المسؤول الطبي قبل النشر، وماتقدّمهوش كتوصية شخصية.")
+    if st.session_state.get("ms_lib_key") and st.session_state.get("ms_lib_retail"):
+        st.info(f"💡 مجموع أسعار تحاليل الحملة في القائمة: **{st.session_state['ms_lib_retail']:,}** ج.م — "
+                "حدّد سعر العرض بنفسك (مش بيتحط تلقائي).")
+
     if kind == "offer":
+        promos_now = active_promotions(load_promos(), st.session_state["ms_branch"], date.today())
+        if promos_now:
+            with st.expander(f"🎁 عروض شغّالة دلوقتي ({len(promos_now)})", expanded=False):
+                st.selectbox("العرض", [x["id"] for x in promos_now], key="ms_promo_pick",
+                             format_func=lambda i: next(
+                                 f"{x['name']} — {x['target']} ({x['promo_price']})"
+                                 for x in promos_now if x["id"] == i))
+                st.button("⚡ املا التصميم من العرض", on_click=fill_from_promo,
+                          args=(st.session_state["ms_branch"],), use_container_width=True)
         with st.expander("📦 املا من باقة حقيقية (السعر بيتسحب أوتوماتيك)", expanded=False):
             names = [b["name"] for b in bundles_for(st.session_state["ms_branch"])]
             st.selectbox("الباقة", names, key="ms_bundle_pick")
@@ -296,9 +377,11 @@ with right:
     st.markdown("**📝 نص المنشور**")
     inc_code = st.toggle("اكتب كود الحملة في النص (لتتبّع الحجوزات)", value=False,
                          key="ms_inc_code")
+    add_disc = st.toggle("إضافة تنويه طبي في النص", value=(kind != "offer"), key="ms_disc")
     auto = build_caption(kind, fields, lab=LAB_NAME_AR,
                          phone=fields.get("phone", ""), maps_url=MAPS_URL,
-                         campaign_id=cid, include_code=inc_code)
+                         campaign_id=cid, include_code=inc_code,
+                         disclaimer=DISCLAIMER if add_disc else "")
     if st.session_state.get("ms_cap_auto") != auto:
         if st.session_state.get("ms_cap_txt") in (None, st.session_state.get("ms_cap_auto")):
             st.session_state["ms_cap_txt"] = auto
