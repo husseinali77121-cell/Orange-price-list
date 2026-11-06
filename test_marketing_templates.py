@@ -115,6 +115,69 @@ finally:
     mt._font_cache.clear()
 
 # ------------------------------------------------------------
+# 4b) خطوط من غير أشكال الحروف المتّصلة (زي Cairo بدون raqm) = الحروف بتطير
+# ------------------------------------------------------------
+import shutil
+import tempfile
+
+LIB = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
+DJV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Fonts", "DejaVuSans-Bold.ttf")
+check("bundled DejaVu is in Fonts/ (guaranteed on any server)", os.path.exists(DJV), True)
+check("DejaVu covers presentation forms", mt.font_has_presentation_forms(DJV), True)
+if os.path.exists(LIB):
+    check("Latin-only font does NOT cover presentation forms", mt.font_has_presentation_forms(LIB), False)
+    tmp = tempfile.mkdtemp()
+    shutil.copy(LIB, os.path.join(tmp, "Cairo-Bold.ttf"))      # Cairo "مزيّف" ناقص الأشكال
+    saved = (mt._FONT_DIRS, mt._font_index, mt.RAQM)
+    try:
+        mt._FONT_DIRS = [tmp] + list(saved[0])
+        mt._font_index = None
+        mt._font_cache.clear()
+        mt.RAQM = False
+        check("no raqm: Cairo-like font w/o forms is skipped -> DejaVu", mt.active_font_name(True), "DejaVuSans-Bold.ttf")
+        check("font_status reports skipped font + fallback mode",
+              (mt.font_status()["mode"], mt.font_status()["skipped"]), ("fallback", ["Cairo-Bold.ttf"]))
+        mt.RAQM = True
+        mt._font_cache.clear()
+        check("with raqm: preferred font is used", mt.active_font_name(True), "Cairo-Bold.ttf")
+        check("with raqm: nothing skipped", mt.font_status()["skipped"], [])
+    finally:
+        mt._FONT_DIRS, mt._font_index, mt.RAQM = saved
+        mt._font_cache.clear()
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _ink_profile(text, raqm, bins=80):
+    """بصمة الحبر على المحور الأفقي — عشان نكشف لو النص اتعكس."""
+    from PIL import ImageDraw
+    mt.RAQM = raqm
+    mt._font_cache.clear()
+    im = Image.new("L", (900, 130), 0)
+    mt.put(ImageDraw.Draw(im), (880, 20), text, mt.get_font(60, True), 255, "ra")
+    mt.RAQM = saved_raqm
+    mt._font_cache.clear()
+    bb = im.getbbox()
+    im = im.crop(bb)
+    return list(im.resize((bins, 1), Image.BOX).getdata()), im.width
+
+
+def _corr(a, b):
+    ma, mb = sum(a) / len(a), sum(b) / len(b)
+    num = sum((x - ma) * (y - mb) for x, y in zip(a, b))
+    den = (sum((x - ma) ** 2 for x in a) * sum((y - mb) ** 2 for y in b)) ** 0.5
+    return num / den if den else 0
+
+
+saved_raqm = mt.RAQM
+for word in ["الدهون", "دقة عالية", "احجز تحاليلك الآن", "رعاية متكاملة"]:
+    a, wa = _ink_profile(word, True)
+    b, wb = _ink_profile(word, False)
+    same, flipped = _corr(a, b), _corr(a, b[::-1])
+    check(f"fallback not mirrored vs raqm: '{word}'", same > flipped, True)
+    check(f"fallback width within 8% of raqm: '{word}'", abs(wa - wb) / wa < 0.08, True)
+mt.RAQM = saved_raqm
+
+# ------------------------------------------------------------
 # 5) parse_rich
 # ------------------------------------------------------------
 check("parse_rich marks [[ ]]", mt.parse_rich("بسبب [[نقص الحديد]] اليوم"),

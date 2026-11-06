@@ -107,17 +107,74 @@ def _scan_fonts() -> Dict[str, str]:
     return _font_index
 
 
+_coverage_cache: Dict[str, bool] = {}
+
+
+def _core_forms() -> set:
+    """أشكال الحروف السياقية (Presentation Forms) لحروف الهجاء الأساسية + لام-ألف."""
+    from arabic_pdf import _FORMS, _LAM_ALEF
+    s = set()
+    for cp, forms in _FORMS.items():
+        if 0x0621 <= cp <= 0x064A:
+            s.update(g for g in forms if g)
+    s.update(_LAM_ALEF.get(0x0627, ()))
+    return s
+
+
+def font_has_presentation_forms(path: str) -> bool:
+    """
+    هل الخط فيه أشكال الحروف المتّصلة (U+FE70–FEFC)؟ ضروري للمسار البديل
+    (من غير raqm): خطوط زي Cairo/Tajawal بتعتمد على GSUB ومابتحطّش الأشكال دي،
+    فحروف زي ا/د/ر/ن بتختفي. بنرسم كل شكل ونقارنه بشكل .notdef.
+    """
+    if path in _coverage_cache:
+        return _coverage_cache[path]
+    try:
+        f = ImageFont.truetype(path, 28)
+
+        def render(ch: str) -> bytes:
+            im = Image.new("L", (80, 80), 0)
+            ImageDraw.Draw(im).text((8, 8), ch, font=f, fill=255)
+            return im.tobytes()
+
+        notdef = {render("\U0010FFFF"), render("\uFFFF"), render("\U000F0000")}
+        ok = all(render(chr(cp)) not in notdef and any(render(chr(cp)))
+                 for cp in sorted(_core_forms()))
+    except Exception:
+        ok = False
+    _coverage_cache[path] = ok
+    return ok
+
+
 def find_font_path(bold: bool = True) -> Optional[str]:
+    """
+    الأولوية بالترتيب (Cairo/Tajawal… ثم DejaVu). مع raqm أي خط ينفع.
+    من غيره بنتخطّى الخطوط اللي ناقصها أشكال الحروف (وإلا الحروف بتطير).
+    """
     idx = _scan_fonts()
-    for n in (_BOLD_NAMES if bold else _REG_NAMES):
-        if n.lower() in idx:
-            return idx[n.lower()]
-    return None
+    found = [idx[n.lower()] for n in (_BOLD_NAMES if bold else _REG_NAMES) if n.lower() in idx]
+    for p in found:
+        if RAQM or font_has_presentation_forms(p):
+            return p
+    return found[0] if found else None
 
 
 def active_font_name(bold: bool = True) -> str:
     p = find_font_path(bold)
     return os.path.basename(p) if p else "(none)"
+
+
+def font_status() -> dict:
+    """للتشخيص في الواجهة: وضع التشكيل، الخط الفعلي، والخطوط اللي اتخطّيناها وليه."""
+    idx = _scan_fonts()
+    skipped = []
+    if not RAQM:
+        for n in _BOLD_NAMES + _REG_NAMES:
+            p = idx.get(n.lower())
+            if p and not font_has_presentation_forms(p):
+                skipped.append(os.path.basename(p))
+    return {"mode": "raqm" if RAQM else "fallback", "bold": active_font_name(True),
+            "regular": active_font_name(False), "skipped": skipped}
 
 
 def get_font(size: int, bold: bool = True) -> ImageFont.FreeTypeFont:
@@ -126,8 +183,10 @@ def get_font(size: int, bold: bool = True) -> ImageFont.FreeTypeFont:
         raise RuntimeError("مفيش خط عربي — حط Cairo-Bold.ttf في مجلد Fonts/")
     key = (path, int(size))
     if key not in _font_cache:
-        kw = {"layout_engine": ImageFont.Layout.RAQM} if RAQM else {}
-        _font_cache[key] = ImageFont.truetype(path, int(size), **kw)
+        # من غير raqm لازم BASIC صريح: الافتراضي في Pillow ممكن يختار raqm لو موجود
+        # فيعمل bidi تاني على النص اللي اتقلب مسبقاً (arabic_pdf) ويطلع معكوس.
+        engine = ImageFont.Layout.RAQM if RAQM else ImageFont.Layout.BASIC
+        _font_cache[key] = ImageFont.truetype(path, int(size), layout_engine=engine)
     return _font_cache[key]
 
 
@@ -456,8 +515,10 @@ def _draw_badge(img: Image.Image, cx: int, cy: int, dia: int, f: dict):
         put(d, (x_r, y), lab, sf, WHITE, "ra")
         ox = x_r - lw - 14
         put(d, (ox, y), old, sf, WHITE, "ra")
-        d.line((ox - ow - 4, y + sf.size * 0.58, ox + 4, y + sf.size * 0.58),
-               fill=(20, 20, 20), width=4)
+        t_, kw_ = _prep(old)
+        bb = d.textbbox((ox, y), t_, font=sf, anchor="ra", **kw_)
+        mid = (bb[1] + bb[3]) / 2                      # منتصف الرقم الفعلي مهما كان الخط
+        d.line((bb[0] - 4, mid, bb[2] + 4, mid), fill=(20, 20, 20), width=4)
     elif sub:
         sf, _ = fit_single(d, sub, dia * 0.60, int(dia * 0.085), 18)
         put(d, (cx, y), sub, sf, WHITE, "ma")

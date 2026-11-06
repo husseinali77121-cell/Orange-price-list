@@ -9,24 +9,36 @@
 from __future__ import annotations
 
 NAV_PAGES = [
-    ("Invoice.py", "🧾", "الفاتورة"),
-    ("pages/2_Marketing_Studio.py", "🎨", "الاستوديو"),
-    ("pages/1_Dashboard.py", "📊", "الداشبورد"),
-    ("pages/3_Follow_Up.py", "📞", "المتابعة"),
-    ("pages/4_Promotions.py", "🎁", "العروض"),
+    ("Invoice.py", "🧾", "Invoice"),
+    ("pages/2_Marketing_Studio.py", "🎨", "Studio"),
+    ("pages/1_Dashboard.py", "📊", "Dashboard"),
+    ("pages/3_Follow_Up.py", "📞", "Follow-up"),
+    ("pages/4_Promotions.py", "🎁", "Offers"),
 ]
 
 NAV_CSS = """
 <style>
-/* روابط التنقّل تفضل جنب بعض على الموبايل */
+/* أزرار التنقّل: مربّعات واضحة بإطار برتقالي، جنب بعض حتى على الموبايل */
 div[data-testid="stHorizontalBlock"]:has(a[data-testid="stPageLink-NavLink"]) {
-  flex-wrap:nowrap !important; gap:.3rem !important;
+  flex-wrap:nowrap !important; gap:.4rem !important; margin:.2rem 0 .6rem 0;
 }
 div[data-testid="stHorizontalBlock"]:has(a[data-testid="stPageLink-NavLink"]) > div {
   min-width:0 !important; flex:1 1 0 !important;
 }
-a[data-testid="stPageLink-NavLink"] {padding:.3rem .2rem !important; justify-content:center;}
-a[data-testid="stPageLink-NavLink"] p {font-size:.78rem; white-space:nowrap;}
+a[data-testid="stPageLink-NavLink"] {
+  display:flex !important; flex-direction:column; align-items:center; justify-content:center;
+  gap:.1rem; min-height:3.1rem; padding:.35rem .15rem !important;
+  border:2px solid #E96D23 !important; border-radius:12px !important;
+  background:#FFF3EA !important; box-shadow:0 1px 3px rgba(233,109,35,.25);
+  text-decoration:none !important; direction:ltr;
+}
+a[data-testid="stPageLink-NavLink"]:hover {background:#E96D23 !important;}
+a[data-testid="stPageLink-NavLink"]:hover p {color:#fff !important;}
+a[data-testid="stPageLink-NavLink"] p {
+  font-size:.74rem !important; font-weight:700 !important; color:#B84A0B !important;
+  white-space:nowrap; margin:0 !important; line-height:1.1;
+}
+a[data-testid="stPageLink-NavLink"] span {font-size:1.15rem !important; margin:0 !important;}
 </style>
 """
 

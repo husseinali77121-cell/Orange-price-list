@@ -299,6 +299,11 @@ for path, name in [("pages/1_Dashboard.py", "1_Dashboard"), ("pages/3_Follow_Up.
 
 check("no stray files in pages/ (every page starts with a number)",
       [f for f in os.listdir("pages") if f.endswith(".py") and not f[0].isdigit()], [])
+check("nav labels are English (as requested)", [l for _p, _i, l in navigation.NAV_PAGES],
+      ["Invoice", "Studio", "Dashboard", "Follow-up", "Offers"])
+check("nav labels contain no Arabic letters", any("\u0600" <= ch <= "\u06FF" for _p, _i, l in navigation.NAV_PAGES for ch in l), False)
+check("nav buttons are boxed (border + background in CSS)", all(
+    k in navigation.NAV_CSS for k in ("border:2px solid", "border-radius", "background:#FFF3EA")), True)
 check("every nav target exists on disk", [p for p, _i, _l in navigation.NAV_PAGES if not os.path.exists(p)], [])
 
 
