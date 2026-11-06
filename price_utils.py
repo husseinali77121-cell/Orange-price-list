@@ -11,6 +11,7 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import random
 import re
 import unicodedata
@@ -788,43 +789,115 @@ def generate_quote_id() -> str:
     return f"OR-{now.strftime('%y%m%d')}-{random.randint(0, 9999):04d}"
 
 
+# ---- لينك العرض المحفوظ ---------------------------------------------------
+# مع quote_secret: اللينك بيتشفّر ويتوقّع (صيغة e1.<...>) — اسم العميل ورقمه
+# مابقوش مقروءين من اللينك. التشفير = HMAC-SHA256 في وضع counter (PRF stream)
+# + توقيع HMAC على النص المشفّر (encrypt-then-MAC)، بمفتاحين منفصلين مشتقّين
+# من الـ secret. من غير secret: نفس الشكل القديم (مضغوط بس، غير مقروء بالعين
+# لكن مش مشفّر) — ومفيش تحقق.
+# اللينكات القديمة الموقّعة (body.sig) لسه بتتفتح عشان الانتقال يبقى سلس.
+
+QUOTE_TTL_HOURS = 48
+
+
 def _sign(body: str, secret: str) -> str:
     mac = hmac.new(secret.encode("utf-8"), body.encode("utf-8"), hashlib.sha256).digest()[:16]
     return base64.urlsafe_b64encode(mac).decode("ascii").rstrip("=")
 
 
-def encode_quote(payload: dict, secret: str = "") -> str:
+def _derive(secret: str, label: bytes) -> bytes:
+    return hmac.new(secret.encode("utf-8"), label, hashlib.sha256).digest()
+
+
+def _keystream(key: bytes, nonce: bytes, n: int) -> bytes:
+    out = bytearray()
+    ctr = 0
+    while len(out) < n:
+        out += hmac.new(key, nonce + ctr.to_bytes(4, "big"), hashlib.sha256).digest()
+        ctr += 1
+    return bytes(out[:n])
+
+
+def _seal(raw: bytes, secret: str, nonce: Optional[bytes] = None) -> bytes:
+    nonce = nonce or os.urandom(12)
+    ek, mk = _derive(secret, b"orange-quote-enc-v1"), _derive(secret, b"orange-quote-mac-v1")
+    ct = bytes(a ^ b for a, b in zip(raw, _keystream(ek, nonce, len(raw))))
+    tag = hmac.new(mk, b"e1" + nonce + ct, hashlib.sha256).digest()
+    return nonce + ct + tag
+
+
+def _unseal(blob: bytes, secret: str) -> Optional[bytes]:
+    if len(blob) < 12 + 32:
+        return None
+    nonce, ct, tag = blob[:12], blob[12:-32], blob[-32:]
+    ek, mk = _derive(secret, b"orange-quote-enc-v1"), _derive(secret, b"orange-quote-mac-v1")
+    want = hmac.new(mk, b"e1" + nonce + ct, hashlib.sha256).digest()
+    if not hmac.compare_digest(tag, want):          # نتحقق قبل أي فك تشفير
+        return None
+    return bytes(a ^ b for a, b in zip(ct, _keystream(ek, nonce, len(ct))))
+
+
+def _b64e(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).decode("ascii").rstrip("=")
+
+
+def _b64d(s: str) -> bytes:
+    return base64.urlsafe_b64decode((s + "=" * (-len(s) % 4)).encode("ascii"))
+
+
+def encode_quote(payload: dict, secret: str = "", *, legacy: bool = False) -> str:
     """
-    قاموس -> نص مضغوط آمن للـ URL (بدون '=' padding)، بيتحط في ?q=
-    لو secret موجود بيتضاف توقيع HMAC بعد نقطة (body.sig): ده بيمنع التعديل
-    على السعر/الخصم في اللينك. التوقيع مش تشفير — المحتوى لسه مقروء.
+    قاموس -> نص آمن للـ URL، بيتحط في ?q=
+      secret موجود  -> e1.<مشفّر+موقّع> (الافتراضي) — البيانات مش مقروءة من اللينك
+      legacy=True   -> الشكل القديم body.sig (موقّع بس، لاختبار التوافق)
+      من غير secret -> body مضغوط بس (من غير حماية)
     """
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    body = base64.urlsafe_b64encode(zlib.compress(raw, 9)).decode("ascii").rstrip("=")
+    comp = zlib.compress(raw, 9)
+    if secret and not legacy:
+        return "e1." + _b64e(_seal(comp, secret))
+    body = _b64e(comp)
     return f"{body}.{_sign(body, secret)}" if secret else body
 
 
-def decode_quote_checked(token: str, secret: str = ""):
+def decode_quote_checked(token: str, secret: str = "", *,
+                         max_age_hours: Optional[float] = None,
+                         now: Optional[datetime] = None):
     """
     بترجّع (data, status). status: ok | unverified (مفيش secret نتحقق بيه) |
-    unsigned (فيه secret واللينك من غير توقيع) | bad_signature | corrupt.
+    unsigned (فيه secret واللينك من غير توقيع) | bad_signature | corrupt |
+    expired (max_age_hours اتحدد واللينك أقدم منه — أو من غير ts صالح).
     data = None في أي حالة غير ok/unverified.
     """
-    body, dot, sig = (token or "").partition(".")
-    if secret:
-        if not dot:
-            return None, "unsigned"
-        if not hmac.compare_digest(sig.encode("utf-8"), _sign(body, secret).encode("utf-8")):
-            return None, "bad_signature"
+    token = token or ""
+    data = None
+    status = "ok" if secret else "unverified"
     try:
-        padded = body + "=" * (-len(body) % 4)
-        raw = zlib.decompress(base64.urlsafe_b64decode(padded.encode("ascii")))
-        data = json.loads(raw.decode("utf-8"))
+        if token.startswith("e1."):
+            if not secret:
+                return None, "corrupt"          # مشفّر ومفيش مفتاح نفكّه بيه
+            plain = _unseal(_b64d(token[3:]), secret)
+            if plain is None:
+                return None, "bad_signature"
+            data = json.loads(zlib.decompress(plain).decode("utf-8"))
+        else:
+            body, dot, sig = token.partition(".")
+            if secret:
+                if not dot:
+                    return None, "unsigned"
+                if not hmac.compare_digest(sig.encode("utf-8"),
+                                           _sign(body, secret).encode("utf-8")):
+                    return None, "bad_signature"
+            data = json.loads(zlib.decompress(_b64d(body)).decode("utf-8"))
     except Exception:
         return None, "corrupt"
     if not isinstance(data, dict):
         return None, "corrupt"
-    return data, ("ok" if secret else "unverified")
+    if max_age_hours is not None:
+        age = quote_age_hours(data.get("ts", ""), now=now)
+        if age is None or age > max_age_hours or age < -1:
+            return None, "expired"
+    return data, status
 
 
 def decode_quote(token: str, secret: str = "") -> Optional[dict]:
@@ -859,10 +932,10 @@ def reprice_saved_items(saved: list, idx: PriceIndex):
     return items, changed, missing
 
 
-def quote_age_hours(created_iso: str) -> Optional[float]:
+def quote_age_hours(created_iso: str, now: Optional[datetime] = None) -> Optional[float]:
     """كام ساعة من وقت حفظ العرض. None لو التاريخ مش قابل للقراءة."""
     try:
         created = datetime.fromisoformat(created_iso)
-        return (datetime.now() - created).total_seconds() / 3600.0
+        return ((now or datetime.now()) - created).total_seconds() / 3600.0
     except Exception:
         return None

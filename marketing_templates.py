@@ -739,7 +739,8 @@ def make_campaign_id(now: Optional[datetime] = None, rng=random) -> str:
 
 def build_caption(kind: str, f: dict, *, lab: str, phone: str = "",
                   maps_url: str = "", campaign_id: str = "",
-                  include_code: bool = False, currency: str = "ج.م") -> str:
+                  include_code: bool = False, currency: str = "ج.م",
+                  disclaimer: str = "") -> str:
     """نص منشور (فيسبوك/واتساب) جاهز للتعديل — بيتبني من نفس حقول التصميم."""
     lines: List[str] = []
     if kind == "offer":
@@ -779,6 +780,8 @@ def build_caption(kind: str, f: dict, *, lab: str, phone: str = "",
     lines.append(cta)
     if maps_url:
         lines.append(f"🗺️ {maps_url}")
+    if disclaimer:
+        lines.append(f"ℹ️ {disclaimer}")
     lines.append(f"{lab} — ببساطة في التحليل، دقة في النتائج")
     if include_code and campaign_id:
         lines.append(f"كود العرض: {campaign_id}")

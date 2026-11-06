@@ -105,6 +105,39 @@ class GithubEventStore:
         raise GithubStoreError(f"append فشلت بعد {max_retries} محاولات: {last_err}")
 
 
+    def update(self, path: str, fn, message: str = "update", max_retries: int = 3):
+        """
+        read -> fn(data) -> write بنفس الـ sha (CAS). بيرجّع البيانات الجديدة.
+        لو حد كتب في نفس اللحظة (409) بيعيد المحاولة من الأول.
+        للعروض (promotions) وأي قايمة بتتعدّل مش بتتزوّد بس.
+        """
+        last_err = None
+        for _ in range(max_retries):
+            try:
+                data, sha = self.read(path)
+                new_data = fn(data)
+                body = {
+                    "message": message,
+                    "content": base64.b64encode(
+                        json.dumps(new_data, ensure_ascii=False, indent=1).encode("utf-8")
+                    ).decode("ascii"),
+                    "branch": self.branch,
+                }
+                if sha:
+                    body["sha"] = sha
+                r = requests.put(self._url(path), headers=self._headers(),
+                                 json=body, timeout=TIMEOUT)
+                if r.status_code in (200, 201):
+                    return new_data
+                if r.status_code in (409, 422):   # sha قديم — حد كتب قبلنا
+                    last_err = f"{r.status_code} conflict"
+                    continue
+                raise GithubStoreError(f"GitHub write فشل ({r.status_code}): {r.text[:200]}")
+            except requests.RequestException as e:
+                last_err = str(e)
+        raise GithubStoreError(f"update فشلت بعد {max_retries} محاولات: {last_err}")
+
+
 def events_path(month_key: str) -> str:
     """events/2026-08.json"""
     return f"events/{month_key}.json"

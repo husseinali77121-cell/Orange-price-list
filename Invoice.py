@@ -7,7 +7,9 @@
 #  الاختبار: python3 test_price_utils.py   (قبل أي رفع)
 # ============================================================
 
+import re
 import uuid
+from dataclasses import replace as dc_replace
 from datetime import date, datetime
 from io import BytesIO
 
@@ -56,12 +58,15 @@ from price_utils import (MATCH_ALIAS, MATCH_AMBIGUOUS, MATCH_EXACT,
                          reprice_saved_items, resolve_test, search_tests,
                          suggest_bundle_offers,
                          validate_patient_name, validate_phone)
-from tracking import (LOST_SALE_REASONS, REFERRAL_SOURCES, make_event,
-                      month_key, summarize_events)
+from tracking import (LOST_SALE_REASONS, REFERRAL_SOURCES, customer_profile,
+                      make_event, month_key, phone_key, summarize_events)
+from access import secret_bool, secret_float
+from promotions import (PROMO_PATH, active_promotions, best_promo_for,
+                        discount_pct_of, needs_approval, pin_ok)
 from marketing import MARKETING_KINDS, build_marketing_message, share_url
 from voice import VOICE_ARIA, mic_html, split_voice_command
 from github_store import (GithubEventStore, GithubStoreError, events_path,
-                          store_from_secrets)
+                          read_events_range, store_from_secrets)
 
 CURRENCY = "ج.م"
 LAB_NAME_AR = "معمل أورانج للتحاليل الطبية"
@@ -111,6 +116,50 @@ def get_quote_secret() -> str:
 QUOTE_SECRET = get_quote_secret()
 
 
+def _secret_str(key: str) -> str:
+    try:
+        return str(st.secrets.get(key, "") or "")
+    except Exception:
+        return ""
+
+
+QUOTE_TTL_HOURS = secret_float(st.secrets, "quote_ttl_hours", 48) or 48   # لينك العرض بيقفل بعدها
+STORE_CONTACTS = secret_bool(st.secrets, "store_contacts")              # تخزين اسم/رقم في «تم الإرسال»
+DISCOUNT_LIMIT_PCT = secret_float(st.secrets, "discount_limit_pct", 0)  # 0 = مفيش حد
+DISCOUNT_PIN = _secret_str("discount_approval_pin")                     # كود موافقة المسؤول
+CAMPAIGN_RE = re.compile(r"^OL-\d{6}-[A-Z0-9]{4}$")
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def load_promos():
+    """عروض «إدارة العروض» (promotions/promotions.json) — فاضية لو التتبّع مش متظبط."""
+    s_ = store_from_secrets(st.secrets)
+    if not s_:
+        return []
+    try:
+        data, _ = s_.read(PROMO_PATH)
+        return data if isinstance(data, list) else []
+    except GithubStoreError:
+        return []
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def recent_events():
+    """آخر 6 شهور أحداث — لمعرفة عميل متكرر/موقوف بالبصمة (بيتحدّث كل 5 دقايق)."""
+    s_ = store_from_secrets(st.secrets)
+    if not s_:
+        return []
+    now_ = datetime.now()
+    y, m = now_.year, now_.month - 5
+    while m < 1:
+        m += 12
+        y -= 1
+    try:
+        return read_events_range(s_, f"{y:04d}-{m:02d}", month_key())
+    except GithubStoreError:
+        return []
+
+
 # ------------------------------------------------------------
 # Session state
 # ------------------------------------------------------------
@@ -138,6 +187,7 @@ DEFAULTS = {
     "saved_link": "",         # آخر لينك "حفظ العرض" اتولّد
     "saved_at": "",           # وقت توليده (ISO) — لحساب صلاحية الـ 48 ساعة
     "referral_source": REFERRAL_SOURCES[-1],
+    "campaign_id": "",        # كود حملة Marketing Studio (اختياري) — بيربط العرض بالحملة
 }
 for k, v in DEFAULTS.items():
     st.session_state.setdefault(k, v)
@@ -152,10 +202,18 @@ if not st.session_state.get("_quote_link_checked"):
     st.session_state["_quote_link_checked"] = True
     q = st.query_params.get("q")
     if q:
-        data, _qstatus = decode_quote_checked(q, QUOTE_SECRET)
+        data, _qstatus = decode_quote_checked(q, QUOTE_SECRET, max_age_hours=QUOTE_TTL_HOURS)
         if data:
             # السعر المخزّن في اللينك مش مصدر حقيقة — بنعيد التسعير من القائمة الحالية
             _qitems, _qchg, _qmiss = reprice_saved_items(data.get("items", []), IDX)
+            # عرض ترويجي شغّال دلوقتي = السعر الحالي (والمنتهي بيرجع لسعر القائمة)
+            _promo_applied = []
+            _pm_all = load_promos()
+            for _it in _qitems:
+                _bp = best_promo_for(_pm_all, _it["name"], st.session_state.branch, date.today())
+                if _bp and _bp["promo_price"] < int(_it["price"]):
+                    _it["price"] = _bp["promo_price"]
+                    _promo_applied.append(f"{_it['name']} ({_bp['promo_price']:,})")
             st.session_state["items"] = [
                 {"uid": uuid.uuid4().hex[:8], **it, "source": "saved_quote"}
                 for it in _qitems
@@ -170,13 +228,11 @@ if not st.session_state.get("_quote_link_checked"):
             st.session_state["discount_type"] = data.get("dtype", "Percentage")
             st.session_state["discount_value"] = data.get("dval", 0.0)
             st.session_state["quote_id"] = data.get("id", "")
-            age_h = quote_age_hours(data.get("ts", ""))
-            if age_h is not None and age_h > 48:
-                flash("warning",
-                      f"⚠️ العرض المحفوظ {data.get('id','')} عمره {age_h:.0f} ساعة "
-                      f"(أكتر من 48 ساعة) — راجع الأسعار قبل ما تأكّده للعميل")
-            else:
-                flash("info", f"📂 اتفتح عرض محفوظ: {data.get('id','')}")
+            _cid = str(data.get("cid", "") or "")
+            st.session_state["campaign_id"] = _cid if CAMPAIGN_RE.match(_cid) else ""
+            flash("info", f"📂 اتفتح عرض محفوظ: {data.get('id','')}")
+            if _promo_applied:
+                flash("info", "🎁 اتطبّق سعر العرض الشغّال: " + "، ".join(_promo_applied))
             if _qchg:
                 flash("warning", "💱 الأسعار اتحدّثت من القائمة الحالية: " + "، ".join(
                     f"{n} ({o:,} ← {pr:,})" for n, o, pr in _qchg))
@@ -186,9 +242,11 @@ if not st.session_state.get("_quote_link_checked"):
             if _qstatus == "unverified":
                 flash("warning", "🔓 توقيع اللينكات مش متفعّل — سلامة اللينك ده ماتتأكدتش")
         else:
-            flash("error", "⚠️ لينك قديم من غير توقيع — اتقفل لحماية البيانات، اعمل العرض من جديد"
-                  if _qstatus == "unsigned" else
-                  "⚠️ لينك العرض ده تالف أو معدَّل — مش هينفتح")
+            flash("error", {
+                "unsigned": "⚠️ لينك قديم من غير توقيع — اتقفل لحماية البيانات، اعمل العرض من جديد",
+                "expired": f"⏱️ لينك العرض انتهت صلاحيته (أكتر من {QUOTE_TTL_HOURS:.0f} ساعة) — "
+                           "اعمل عرض جديد بالأسعار الحالية",
+            }.get(_qstatus, "⚠️ لينك العرض ده تالف أو معدَّل — مش هينفتح"))
 
 if not st.session_state["quote_id"]:
     st.session_state["quote_id"] = generate_quote_id()
@@ -372,8 +430,18 @@ st.session_state.referral_source = st.selectbox(
     index=REFERRAL_SOURCES.index(st.session_state.referral_source),
     help="بيساعدنا نعرف أي قناة تسويقية بتجيب عملاء أكتر")
 
+st.session_state.campaign_id = st.text_input(
+    "كود الحملة (اختياري)", value=st.session_state.campaign_id, placeholder="OL-261105-AB12",
+    help="لو العميل جه من إعلان عملته من Marketing Studio — اكتب الكود اللي على التصميم/النص"
+).strip().upper()
+CAMPAIGN = st.session_state.campaign_id if CAMPAIGN_RE.match(st.session_state.campaign_id) else ""
+if st.session_state.campaign_id and not CAMPAIGN:
+    st.caption("⚠️ الشكل المتوقع للكود: OL-YYMMDD-XXXX — مش هيتسجّل بالشكل ده")
+
 name_chk = validate_patient_name(st.session_state.p_name)
 phone_chk = validate_phone(st.session_state.p_phone)
+PK = phone_key(phone_chk.value, QUOTE_SECRET) if phone_chk.ok else ""
+CUSTOMER = customer_profile(recent_events(), PK) if PK else None
 
 v1, v2 = st.columns(2)
 with v1:
@@ -399,12 +467,36 @@ with v2:
         for e in phone_chk.errors:
             st.markdown(f"<span class='bad-badge'>❌ {e}</span>", unsafe_allow_html=True)
 
+if CUSTOMER and CUSTOMER["optout"]:
+    st.warning("🚫 العميل ده طلب إيقاف الرسائل التسويقية والمتابعة — ماتبعتلوش رسائل غير عرض السعر اللي طلبه.")
+elif CUSTOMER and CUSTOMER["label"] != "New":
+    st.caption(f"👤 عميل {CUSTOMER['label']} — {CUSTOMER['quotes']} عرض قبل كده، "
+               f"اتباع له {CUSTOMER['converted']} مرة"
+               + (f" بإجمالي {CUSTOMER['revenue']:,} {CURRENCY}" if CUSTOMER["revenue"] else ""))
+
 st.divider()
 
 
 # ------------------------------------------------------------
 # 2) Quick panels
 # ------------------------------------------------------------
+
+_promos_now = active_promotions(load_promos(), st.session_state.branch, date.today())
+if _promos_now:
+    with st.expander(f"🎁 عروض شغّالة دلوقتي ({len(_promos_now)})"):
+        for _p in _promos_now:
+            pa, pb = st.columns([3, 1])
+            pa.markdown(f"**{_p['name']}** — {_p['target']}: ~~{_p['original_price']:,}~~ → "
+                        f"**{_p['promo_price']:,}** {CURRENCY}")
+            if pb.button("➕ أضف", key=f"promo_{_p['id']}", use_container_width=True):
+                _prec = resolve_test(_p["target"], IDX).best
+                if _prec:
+                    _pres = try_add(dc_replace(_prec, price=_p["promo_price"]), source=f"promo:{_p['id']}")
+                    if _pres == "added":
+                        flash("success", f"🎁 اتضاف {_prec.name} بسعر العرض {_p['promo_price']:,}")
+                    elif _pres == "duplicate":
+                        flash("info", f"{_prec.name} موجود في الفاتورة بالفعل")
+                st.rerun()
 
 st.markdown("#### ⚡ الإدخال السريع")
 
@@ -822,7 +914,27 @@ wa_url, wa_msg, wa_note = build_whatsapp_link_safe(
 if wa_note and items:
     st.warning(wa_note)
 
+# ---- سياسة الخصم: أكبر من الحد = موافقة المسؤول بكود (secrets: discount_limit_pct + discount_approval_pin)
+_limit_hit = bool(items) and needs_approval(totals, DISCOUNT_LIMIT_PCT)
+_appr_key = f"_appr_{st.session_state.quote_id}_{totals['discount']}"   # الموافقة مربوطة بقيمة الخصم دي
+_approved = bool(st.session_state.get(_appr_key))
+if _limit_hit and not _approved:
+    if DISCOUNT_PIN:
+        st.warning(f"🔐 الخصم {discount_pct_of(totals):.0f}% أكبر من الحد المسموح "
+                   f"({DISCOUNT_LIMIT_PCT:.0f}%) — محتاج موافقة المسؤول")
+        _pin = st.text_input("كود الموافقة", type="password", key="disc_pin")
+        if _pin and pin_ok(_pin, DISCOUNT_PIN):
+            st.session_state[_appr_key] = True
+            st.rerun()
+        elif _pin:
+            st.error("كود الموافقة غلط")
+    else:
+        st.warning(f"⚠️ الخصم {discount_pct_of(totals):.0f}% أكبر من الحد ({DISCOUNT_LIMIT_PCT:.0f}%) "
+                   "— ضيف discount_approval_pin في Secrets عشان يتطلب موافقة")
+
 blockers = []
+if _limit_hit and DISCOUNT_PIN and not _approved:
+    blockers.append("الخصم محتاج موافقة المسؤول")
 if not items:
     blockers.append("مفيش تحاليل في الفاتورة")
 if not name_chk.ok:
@@ -845,7 +957,9 @@ if not blockers:
                     branch=st.session_state.branch,
                     referral_source=st.session_state.referral_source,
                     total=totals["total"], count=totals["count"],
-                    items=[i["name"] for i in items]))
+                    items=[i["name"] for i in items],
+                    campaign_id=CAMPAIGN, phone_key=PK, discount=totals["discount"],
+                    meta={"approved": True} if _approved and _limit_hit else None))
             except GithubStoreError:
                 pass  # التتبّع مش أولوية أعلى من إتمام الفاتورة نفسها
         st.session_state[_log_key] = True
@@ -863,6 +977,28 @@ with s1:
             f'padding:9px;border-radius:6px;font-weight:700;">'
             f'📲 إرسال لـ {format_phone_display(phone_chk.value)}</div></a>',
             unsafe_allow_html=True)
+        # «اتجهّز» ≠ «اتبعت»: الموظف بيأكّد الإرسال بإيده (أساس قايمة المتابعة)
+        _sent_key = f"_sent_{st.session_state.quote_id}"
+        if st.session_state.get(_sent_key):
+            st.caption("✔ اتسجّل إن العرض اتبعت للعميل")
+        elif st.button("✅ تم الإرسال للعميل", use_container_width=True, key="btn_sent"):
+            _store = get_event_store()
+            if _store:
+                try:
+                    _contact = ({"name": name_chk.value, "phone": phone_chk.value}
+                                if STORE_CONTACTS and name_chk.ok else None)
+                    _store.append(events_path(month_key()), make_event(
+                        "sent", st.session_state.quote_id, branch=st.session_state.branch,
+                        total=totals["total"], count=totals["count"],
+                        items=[i["name"] for i in items], discount=totals["discount"],
+                        campaign_id=CAMPAIGN, phone_key=PK, contact=_contact))
+                    st.session_state[_sent_key] = True
+                    flash("success", "✅ اتسجّل إن العرض اتبعت — هيظهر في «متابعة النهاردة» لو العميل ماردّش")
+                except GithubStoreError as e:
+                    flash("error", f"مقدرتش أسجّل الإرسال: {e}")
+            else:
+                flash("warning", "تتبّع العروض مش متظبط في الإعدادات (secrets)")
+            st.rerun()
 
 with s2:
     pdf_ready = bool(items) and name_chk.ok
@@ -899,7 +1035,7 @@ with s3:
     if st.button("🗑️ فاتورة جديدة", use_container_width=True):
         for k in ("items", "pending", "pending_panel", "conflict", "p_name", "p_phone",
                   "p_doctor", "discount_value", "quote_id", "dismissed_offers",
-                  "saved_link", "saved_at", "referral_source"):
+                  "saved_link", "saved_at", "referral_source", "campaign_id"):
             st.session_state[k] = DEFAULTS[k] if not isinstance(DEFAULTS[k], list) else []
         st.session_state.p_date = date.today()
         st.session_state.disc_gen += 1
@@ -920,6 +1056,8 @@ st.divider()
 # ------------------------------------------------------------
 
 st.markdown("#### 💾 حفظ العرض للمتابعة لاحقاً")
+st.caption(f"🔐 اللينك مشفّر وبيقفل لوحده بعد {QUOTE_TTL_HOURS:.0f} ساعة" if QUOTE_SECRET else
+           "🔓 من غير quote_secret اللينك مش مشفّر ومش بيتأكد منه")
 
 sv1, sv2 = st.columns([1, 2])
 with sv1:
@@ -936,6 +1074,7 @@ with sv1:
             "date_iso": st.session_state.p_date.isoformat(),
             "dtype": st.session_state.discount_type,
             "dval": st.session_state.discount_value,
+            "cid": CAMPAIGN,
         }
         st.session_state.saved_link = f"{APP_URL}/?q={encode_quote(payload, QUOTE_SECRET)}"
         st.session_state.saved_at = payload["ts"]
@@ -946,16 +1085,18 @@ if st.session_state.saved_link and not QUOTE_SECRET:
                "عشان محدّش يقدر يعدّل السعر أو الخصم فيه")
 if st.session_state.saved_link:
     with sv2:
-        st.text_input("لينك العرض — صالح 48 ساعة (شير له، افتحه تاني يرجّع نفس الفاتورة)",
+        st.text_input(f"لينك العرض — صالح {QUOTE_TTL_HOURS:.0f} ساعة (شير له، افتحه تاني يرجّع نفس الفاتورة)",
                       value=st.session_state.saved_link, key="saved_link_box")
     if APP_URL.startswith("https://REPLACE"):
         st.warning("⚠️ لسه محطوطش لينك التطبيق الحقيقي في `APP_URL` أعلى الملف — "
                    "غيّره عشان اللينك ده يفتح صح")
 
-    if phone_chk.ok:
+    if phone_chk.ok and CUSTOMER and CUSTOMER["optout"]:
+        st.caption("🚫 العميل طلب إيقاف الرسائل — زرار التذكير متقفل")
+    elif phone_chk.ok:
         rem_name = name_chk.value if name_chk.ok else st.session_state.p_name
         age_now = quote_age_hours(st.session_state.saved_at)
-        remaining = max(0, round(48 - age_now)) if age_now is not None else 48
+        remaining = max(0, round(QUOTE_TTL_HOURS - age_now)) if age_now is not None else round(QUOTE_TTL_HOURS)
         reminder_msg = (
             f"🍊 *{LAB_NAME_AR}*\n"
             f"مرحباً {rem_name}،\n"
@@ -1073,6 +1214,9 @@ with st.expander("📊 إحصائيات الشهر ده"):
 # ------------------------------------------------------------
 
 with st.expander("📣 رسائل تسويقية (واتساب)"):
+    if CUSTOMER and CUSTOMER["optout"]:
+        st.warning("🚫 العميل ده طلب إيقاف الرسائل التسويقية — الرسائل هنا متقفلة.")
+        st.stop()
     _rows = []
     for _b in bundles_for(st.session_state.branch):
         _rec = resolve_test(_b["name"], IDX).best

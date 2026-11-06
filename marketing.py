@@ -89,3 +89,28 @@ def build_marketing_message(kind: str, lang: str = "ar", *, lab: str, name: str 
         return "\n".join(parts)
 
     raise ValueError(f"unknown marketing kind: {kind}")
+
+
+OPTOUT_LINE_AR = "لو مش حابب نتواصل معاك تاني ابعتلنا «إيقاف» وهنوقف الرسائل."
+
+
+def build_followup_message(*, lab: str, name: str = "", items=(), total: int = 0,
+                           currency: str = "ج.م", attempt: int = 0,
+                           optout_line: bool = True) -> str:
+    """رسالة متابعة لعرض اتبعت ولسه من غير قرار (صفحة «متابعة النهاردة»).
+    attempt = كام محاولة اتعملت قبل كده (المحاولة الأخيرة بتبقى أخف وأقصر)."""
+    g = _greet(name, "ar")
+    names = [str(i) for i in items][:4]
+    more = len(list(items)) - len(names)
+    what = "، ".join(names) + (f" و{more} تحاليل تانية" if more > 0 else "") if names else ""
+    amt = f" بإجمالي {total:,} {currency}" if total else ""
+    if attempt >= 2:
+        body = (f"آخر تذكير بخصوص عرض التحاليل{amt} 🙏 "
+                f"لو لسه محتاجه ابعتلنا وهنحجزلك ميعاد مناسب.")
+    else:
+        body = (f"بنفكّرك بعرض التحاليل اللي طلبته" + (f" ({what})" if what else "") + f"{amt}. "
+                f"لو حابب تعدّل في التحاليل أو تحجز ميعاد إحنا تحت أمرك ✅")
+    parts = [g, f"من {lab}", body]
+    if optout_line:
+        parts.append(OPTOUT_LINE_AR)
+    return "\n".join(parts)
