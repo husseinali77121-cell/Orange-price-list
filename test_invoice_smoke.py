@@ -273,6 +273,76 @@ SS = "pages/2_Marketing_Studio.py"
 fake, g, gh = page(SS, promos=[{**promo, "target": "Lipid Profile", "original_price": 700, "promo_price": 600}])
 check("studio renders with active promo present", any(c[0] == "image" for c in fake.calls), True)
 
+# ------------------------------------------------------------
+# 10) التنقّل بين الصفحات + صورة العروض + المشاركة
+# ------------------------------------------------------------
+import os
+import re
+
+import navigation
+import share_widget
+
+fake, g, gh = invoice()
+links = [c[1][0] for c in fake.calls if c[0] == "page_link"]
+check("invoice shows links to the 4 other pages (not itself)",
+      sorted(links), sorted(p for p, _i, _l in navigation.NAV_PAGES if p != "Invoice.py"))
+src = open("Invoice.py", encoding="utf-8").read()
+check("invoice no longer hides the whole header (holds the pages toggle)",
+      re.search(r'header\[data-testid="stHeader"\]\s*\{display:none', src) is None, True)
+
+for path, name in [("pages/1_Dashboard.py", "1_Dashboard"), ("pages/3_Follow_Up.py", "3_Follow_Up"),
+                   ("pages/4_Promotions.py", "4_Promotions"), ("pages/2_Marketing_Studio.py", "2_Studio")]:
+    f_, g_, gh_ = page(path)
+    ln = [c[1][0] for c in f_.calls if c[0] == "page_link"]
+    check(f"{name}: nav present, excludes itself, links back to invoice",
+          (path not in ln, "Invoice.py" in ln, len(ln)), (True, True, 4))
+
+check("no stray files in pages/ (every page starts with a number)",
+      [f for f in os.listdir("pages") if f.endswith(".py") and not f[0].isdigit()], [])
+check("every nav target exists on disk", [p for p, _i, _l in navigation.NAV_PAGES if not os.path.exists(p)], [])
+
+
+class Flaky(fs.FakeSt):
+    def page_link(self, path, label=None, icon=None, **kw):
+        if "Dashboard" in path:
+            raise RuntimeError("page not found")
+        if "kwargs_old" in kw:
+            raise TypeError
+        self.calls.append(("page_link_ok", path))
+
+
+fk = Flaky()
+check("nav survives a missing page (no crash, others shown)", navigation.render_nav(fk, ""), 4)
+
+
+class OldStreamlit(fs.FakeSt):
+    def page_link(self, path, label=None, icon=None, **kw):
+        if "use_container_width" in kw:
+            raise TypeError("unexpected keyword")
+        self.calls.append(("page_link_ok", path))
+
+
+check("nav falls back for old Streamlit (no use_container_width)", navigation.render_nav(OldStreamlit(), ""), 5)
+
+# صورة عروض الباقات داخل الفاتورة
+fake, g, gh = invoice()
+html = [c[1] for c in fake.calls if c[0] == "components.html"]
+check("marketing expander: offers image rendered", any(c[0] == "image" for c in fake.calls), True)
+dl = [c[1] for c in fake.calls if c[0] == "download"]
+check("marketing expander: PNG + JPG download buttons for the image",
+      (any("PNG" in d for d in dl), any("JPG" in d for d in dl)), (True, True))
+check("marketing expander: share-image button embedded", any("navigator.share" in h for h in html), True)
+fake, g, gh = invoice(typed={"mk_img_size": "story"})
+check("image size selectable (story)", any(c[0] == "image" for c in fake.calls), True)
+
+# المشاركة: مفيش كسر للـ script ولا حقن
+evil = 'عرض </script><script>alert(1)</script> "quote" \\ end'
+h = share_widget.share_button_html(b"\xff\xd8\xff", evil, 'bad"name\\.jpg')
+check("share html: single script block (no breakout)", h.count("</script>"), 1)
+check("share html: text embedded as JSON string", '"عرض <\\/script>' in h, True)
+check("share html: filename sanitized", 'bad"name' not in h and "badname.jpg" in h, True)
+check("share html: base64 image present", "const B64 = \"/9j/\"" in h or "const B64 = \"" in h, True)
+
 print("\n" + "=" * 78)
 if fails:
     print(f"{len(fails)} FAILURE(S)")

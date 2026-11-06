@@ -7,6 +7,7 @@
 #  الاختبار: python3 test_price_utils.py   (قبل أي رفع)
 # ============================================================
 
+import json
 import re
 import uuid
 from dataclasses import replace as dc_replace
@@ -22,7 +23,8 @@ st.markdown("""
 <style>
 .stActionButton {display:none !important;}
 #MainMenu, footer {visibility:hidden !important;}
-header[data-testid="stHeader"] {display:none !important;}
+header[data-testid="stHeader"] {background:transparent !important; height:2.4rem !important;}
+[data-testid="stToolbar"], [data-testid="stDecoration"] {display:none !important;}
 div[data-testid="stVerticalBlock"] {gap:.55rem;}
 .stButton>button {
   font-size:.82rem; padding:.32rem .35rem;
@@ -64,6 +66,15 @@ from access import secret_bool, secret_float
 from promotions import (PROMO_PATH, active_promotions, best_promo_for,
                         discount_pct_of, needs_approval, pin_ok)
 from marketing import MARKETING_KINDS, build_marketing_message, share_url
+from navigation import render_nav
+
+try:                                   # الصور محتاجة Pillow — لو مش موجود الفاتورة تكمّل من غيرها
+    from marketing_templates import (SIZE_LABELS, SIZES, render_template,
+                                     to_jpeg_bytes, to_png_bytes)
+    from share_widget import share_button_html
+    HAS_IMAGES = True
+except Exception:  # noqa: BLE001
+    HAS_IMAGES = False
 from voice import VOICE_ARIA, mic_html, split_voice_command
 from github_store import (GithubEventStore, GithubStoreError, events_path,
                           read_events_range, store_from_secrets)
@@ -141,6 +152,20 @@ def load_promos():
         return data if isinstance(data, list) else []
     except GithubStoreError:
         return []
+
+
+@st.cache_data(show_spinner=False, max_entries=12)
+def packages_card(rows_json: str, size: str, phone: str):
+    """صورة «عروض الباقات» بقالب Orange — (PNG, JPG). الأسعار من القائمة الحالية."""
+    rows = json.loads(rows_json)
+    items = "\n".join(
+        f"{r['name']} — {r['price']:,}" + (f" (وفّر {r['saving']:,})" if r["saving"] > 0 else "")
+        for r in rows)
+    img = render_template("offer", size, {
+        "title_small": "عروض", "title_big": "الباقات", "subtitle": "اختار الباقة المناسبة ليك",
+        "badge_mode": "none", "list_title": "الأسعار بالجنيه", "items": items,
+        "cta": "احجز الآن", "photo": "sugar", "phone": phone, "show_trust": True})
+    return to_png_bytes(img), to_jpeg_bytes(img, 90)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -401,6 +426,7 @@ with st.sidebar:
 # ------------------------------------------------------------
 
 st.markdown("## 🍊 Orange Lab — فاتورة تحاليل")
+render_nav(st, "Invoice.py")
 st.caption(f"🧾 Quote ID: `{st.session_state.quote_id}`  ·  للمتابعة الداخلية بس، "
            f"مش بتتحط في رسالة العميل")
 
@@ -1241,3 +1267,27 @@ with st.expander("📣 رسائل تسويقية (واتساب)"):
         st.link_button("📲 افتح واتساب بالرسالة دي", _murl, use_container_width=True)
         if not _mphone:
             st.caption("مفيش رقم عميل صالح — واتساب هيسيبك تختار جهة الاتصال")
+
+    # ---- نفس العرض كصورة (قالب Orange) — واتساب بيرفق النص بس، فالصورة بتتبعت بزرار المشاركة
+    if mk == "offer" and HAS_IMAGES and _rows:
+        st.markdown("**🖼️ ابعتها كصورة**")
+        _isz = st.radio("مقاس الصورة", list(SIZES), index=1, horizontal=True, key="mk_img_size",
+                        format_func=lambda k: SIZE_LABELS[k])
+        try:
+            from brand import DEFAULT_PHONE as _LAB_PHONE
+            _png, _jpg = packages_card(json.dumps(_rows, ensure_ascii=False, sort_keys=True),
+                                       _isz, _LAB_PHONE)
+        except Exception as _e:  # noqa: BLE001
+            st.warning(f"مقدرتش أرسم الصورة: {_e}")
+        else:
+            st.image(_png, use_container_width=True)
+            _fname = f"orange-packages-{st.session_state.branch.split()[0].lower()}-{_isz}"
+            _i1, _i2 = st.columns(2)
+            _i1.download_button("⬇️ حمّل الصورة (PNG)", _png, file_name=f"{_fname}.png",
+                                mime="image/png", use_container_width=True, key="mk_dl_png")
+            _i2.download_button("⬇️ JPG (أخف)", _jpg, file_name=f"{_fname}.jpg",
+                                mime="image/jpeg", use_container_width=True, key="mk_dl_jpg")
+            components.html(share_button_html(_jpg, mk_msg, f"{_fname}.jpg"), height=90)
+            st.caption("📲 «شارك الصورة نفسها» بيفتح قايمة المشاركة في الموبايل بالصورة والنص. "
+                       "لو مش شغّال عندك: اضغط مطوّلاً على الصورة ← مشاركة/حفظ. "
+                       "لتصميمات أكتر (خصم، توعية، قصص) افتح 🎨 الاستوديو.")
