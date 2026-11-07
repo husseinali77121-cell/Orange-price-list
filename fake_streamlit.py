@@ -63,6 +63,7 @@ class FakeSt(types.ModuleType):
         self.typed = dict(typed or {})   # مفتاح/عنوان خانة -> قيمة بتتكتب فيها
         self.query_params = QueryParams(query or {})
         self.calls = []
+        self.options = {}                # key -> خيارات آخر selectbox اتبنى بالمفتاح ده
         self.sidebar = _Ctx(self)
 
     # ---- helpers
@@ -102,6 +103,7 @@ class FakeSt(types.ModuleType):
 
     def selectbox(self, label, options, index=0, key=None, **kw):
         options = list(options)
+        self.options[key or label] = options
         default = options[index] if (options and index is not None) else None
         return self._input(label, key, default)
 

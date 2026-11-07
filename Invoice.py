@@ -68,6 +68,12 @@ from promotions import (PROMO_PATH, active_promotions, best_promo_for,
 from marketing import MARKETING_KINDS, build_marketing_message, share_url
 from navigation import render_nav
 
+try:                                   # كتالوج العروض (القائمة الترحيبية + الأرقام)
+    import offers_catalog as OC
+    HAS_CATALOG = True
+except Exception:  # noqa: BLE001
+    HAS_CATALOG = False
+
 try:                                   # الصور محتاجة Pillow — لو مش موجود الفاتورة تكمّل من غيرها
     from marketing_templates import (SIZE_LABELS, SIZES, render_template,
                                      to_jpeg_bytes, to_png_bytes)
@@ -165,6 +171,16 @@ def packages_card(rows_json: str, size: str, phone: str):
         "title_small": "عروض", "title_big": "الباقات", "subtitle": "اختار الباقة المناسبة ليك",
         "badge_mode": "none", "list_title": "الأسعار بالجنيه", "items": items,
         "cta": "احجز الآن", "photo": "sugar", "phone": phone, "show_trust": True})
+    return to_png_bytes(img), to_jpeg_bytes(img, 90)
+
+
+@st.cache_data(show_spinner=False, max_entries=24)
+def catalog_card(offer_id: str, size: str, phone: str):
+    """صورة عرض من الكتالوج بقالب Orange — (PNG, JPG)."""
+    f = OC.studio_fields(OC.get(offer_id))
+    f.pop("template", None)
+    f.update({"phone": phone, "photo": "sugar"})
+    img = render_template("offer", size, f)
     return to_png_bytes(img), to_jpeg_bytes(img, 90)
 
 
@@ -943,7 +959,8 @@ if wa_note and items:
 # ---- سياسة الخصم: أكبر من الحد = موافقة المسؤول بكود (secrets: discount_limit_pct + discount_approval_pin)
 _limit_hit = bool(items) and needs_approval(totals, DISCOUNT_LIMIT_PCT)
 _appr_key = f"_appr_{st.session_state.quote_id}_{totals['discount']}"   # الموافقة مربوطة بقيمة الخصم دي
-_approved = bool(st.session_state.get(_appr_key))
+_offer_ok = st.session_state.get("_offer_disc") == (st.session_state.quote_id, totals["discount"])
+_approved = bool(st.session_state.get(_appr_key)) or _offer_ok       # سعر عرض رسمي = معتمد
 if _limit_hit and not _approved:
     if DISCOUNT_PIN:
         st.warning(f"🔐 الخصم {discount_pct_of(totals):.0f}% أكبر من الحد المسموح "
@@ -985,7 +1002,8 @@ if not blockers:
                     total=totals["total"], count=totals["count"],
                     items=[i["name"] for i in items],
                     campaign_id=CAMPAIGN, phone_key=PK, discount=totals["discount"],
-                    meta={"approved": True} if _approved and _limit_hit else None))
+                    meta=({"approved": True} if _approved and _limit_hit and not _offer_ok else None)
+                    or ({"offer": st.session_state["_offer_id"]} if _offer_ok else None)))
             except GithubStoreError:
                 pass  # التتبّع مش أولوية أعلى من إتمام الفاتورة نفسها
         st.session_state[_log_key] = True
@@ -1238,6 +1256,114 @@ with st.expander("📊 إحصائيات الشهر ده"):
 # 9) 📣 رسائل تسويقية (واتساب)
 #    قوالب جاهزة بتتبني من بيانات الفاتورة الحالية — عدّل النص قبل الإرسال
 # ------------------------------------------------------------
+
+def apply_catalog_offer(o):
+    """بيضيف تحاليل العرض للفاتورة (بنفس حماية التكرار/التعارض) ويظبط خصم ثابت
+    يخلّي إجمالي التحاليل دي = سعر العرض بالظبط. لو فيه خصم متسجّل قبل كده مابيلمسوش."""
+    added = dup = 0
+    for name in o["db"]:
+        hits = IDX.get(name)
+        if not hits:
+            continue
+        res = try_add(hits[0], source=f"offer:{o['id']}")
+        added += res == "added"
+        dup += res == "duplicate"
+    wanted = set(o["db"])
+    base = sum(int(i["price"]) for i in st.session_state["items"] if i["name"] in wanted)
+    need = base - int(o["after"])
+    if st.session_state.get("conflict"):
+        flash("warning", "فيه تعارض في إضافة بعض التحاليل — اتحلّه الأول وبعدها اضغط تاني")
+    elif need <= 0:
+        flash("info", f"اتضافت التحاليل ({added} جديد). سعر العرض مش أقل من مجموعها فمفيش خصم يتطبّق")
+    elif float(st.session_state.discount_value or 0) > 0:
+        flash("warning", f"اتضافت التحاليل، بس فيه خصم متسجّل — اضبطه يدوي ({need} ج) "
+                         f"عشان الإجمالي يبقى {int(o['after']):,}")
+    else:
+        st.session_state.discount_type = "Fixed Amount"
+        st.session_state.discount_value = float(need)
+        st.session_state.disc_gen += 1
+        st.session_state["_offer_disc"] = (st.session_state.quote_id, need)
+        st.session_state["_offer_id"] = o["id"]
+        flash("success", f"✅ اتطبّق «{o['title']}»: {added} تحليل جديد + خصم {need:,} "
+                         f"= {int(o['after']):,} {CURRENCY}" + (f" ({dup} كانوا موجودين)" if dup else ""))
+
+
+if HAS_CATALOG:
+    with st.expander("📋 عروض المعمل (بالرقم)"):
+        _opted = bool(CUSTOMER and CUSTOMER["optout"])
+        if _opted:
+            st.warning("🚫 العميل طلب إيقاف الرسائل — متاح بس ردود الخدمة.")
+        _opts = [o for o in OC.selectable() if (not _opted or o["status"] == "service")]
+        _pick = st.selectbox("رقم العرض", ([] if _opted else ["menu"]) + [o["id"] for o in _opts], key="cat_pick",
+                             format_func=lambda i: ("📋 القائمة الترحيبية (كل الأرقام)" if i == "menu"
+                                                    else OC.option_label(OC.get(i))))
+        _co = None if _pick == "menu" else OC.get(_pick)
+        _w1, _w2 = st.columns(2)
+        _wh = _w1.toggle("مواعيد العمل", key="cat_hours")
+        _wl = _w2.toggle("عنوان الفرع", key="cat_loc")
+        if _co and not OC.is_sendable(_co):
+            st.warning("⚠️ الرقم ده في القائمة بس لسه من غير تفاصيل/سعر — ضيفها في offers_data.py")
+        else:
+            _t0 = (OC.menu_message() if _co is None else
+                   OC.offer_message(_co, IDX, branch=st.session_state.branch, with_hours=_wh, with_location=_wl))
+            _ctxt = st.text_area("نص الرسالة (تقدر تعدّله)", value=_t0, height=230,
+                                 key=f"cat_txt_{_pick}_{_wh}_{_wl}_{st.session_state.branch}")
+            _cphone = phone_chk.value if phone_chk.ok else ""
+            _curl = share_url(_ctxt, _cphone)
+            if len(_curl) > MAX_WA_URL:
+                st.warning("الرسالة طويلة على لينك واتساب — انسخها (زرار النسخ فوق يمين المربع) والصقها في المحادثة")
+                st.code(_ctxt, language=None)
+                st.link_button("📲 افتح محادثة واتساب (والصق الرسالة)",
+                               f"https://wa.me/{_cphone}" if _cphone else "https://wa.me/",
+                               use_container_width=True)
+            else:
+                st.link_button("📲 افتح واتساب بالرسالة دي", _curl, use_container_width=True)
+                if not _cphone:
+                    st.caption("مفيش رقم عميل صالح — واتساب هيسيبك تختار جهة الاتصال")
+
+        if _co and _co["id"] == "27":                       # العميل كتب 27: إيقاف الرسائل
+            if PK and get_event_store():
+                if st.button("🚫 سجّل طلب إيقاف الرسائل لرقم العميل", key="cat_optout", use_container_width=True):
+                    try:
+                        get_event_store().append(events_path(month_key()), make_event(
+                            "optout", st.session_state.quote_id, branch=st.session_state.branch, phone_key=PK))
+                        recent_events.clear()
+                        flash("success", "✅ اتسجّل — الرقم ده مش هيظهر في المتابعة ولا الرسائل التسويقية")
+                    except GithubStoreError as e:
+                        flash("error", f"مقدرتش أسجّل الإيقاف: {e}")
+                    st.rerun()
+            else:
+                st.caption("لتسجيل الإيقاف لازم رقم عميل صالح + quote_secret + تتبّع العروض متظبط")
+
+        if _co and _co["status"] == "current" and _co.get("after"):
+            st.caption(f"💰 {_co['after']:,} {CURRENCY}"
+                       + (f" بدل {_co['before']:,} (توفير {OC.saving(_co):,})" if _co.get("before") else ""))
+            if _co["db"]:
+                if st.button("⚡ طبّق العرض على الفاتورة (التحاليل + الخصم)", key=f"cat_apply_{_co['id']}",
+                             use_container_width=True):
+                    apply_catalog_offer(_co)
+                    st.rerun()
+            else:
+                st.caption("التحاليل مش مسمّاة بالاسم — ضيفها للفاتورة يدوي")
+            if HAS_IMAGES:
+                st.markdown("**🖼️ كصورة**")
+                _csz = st.radio("مقاس الصورة", list(SIZES), index=1, horizontal=True, key="cat_img_size",
+                                format_func=lambda k: SIZE_LABELS[k])
+                try:
+                    from brand import DEFAULT_PHONE as _P
+                    _cpng, _cjpg = catalog_card(_co["id"], _csz, _P)
+                except Exception as _e:  # noqa: BLE001
+                    st.warning(f"مقدرتش أرسم الصورة: {_e}")
+                else:
+                    st.image(_cpng, use_container_width=True)
+                    _cf = f"orange-offer-{_co['id']}-{_csz}"
+                    _c1, _c2 = st.columns(2)
+                    _c1.download_button("⬇️ حمّل الصورة (PNG)", _cpng, file_name=f"{_cf}.png",
+                                        mime="image/png", use_container_width=True, key="cat_dl_png")
+                    _c2.download_button("⬇️ JPG (أخف)", _cjpg, file_name=f"{_cf}.jpg",
+                                        mime="image/jpeg", use_container_width=True, key="cat_dl_jpg")
+                    components.html(share_button_html(_cjpg, _ctxt, f"{_cf}.jpg"), height=90)
+
 
 with st.expander("📣 رسائل تسويقية (واتساب)"):
     if CUSTOMER and CUSTOMER["optout"]:
