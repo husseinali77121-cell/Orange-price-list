@@ -16,7 +16,9 @@ from urllib.parse import quote
 import streamlit as st
 import streamlit.components.v1 as components
 
-from brand import DEFAULT_PHONE, FACEBOOK_PAGE_URL, LAB_NAME_AR, MAPS_URL
+import offers_catalog as OC
+from brand import (DEFAULT_PHONE, FACEBOOK_PAGE_URL, LAB_NAME_AR, MAPS_URL,
+                   branch_maps_url)
 from campaign_library import CAMPAIGNS, DISCLAIMER, campaign_fields
 from bundles import BUNDLES as BUNDLE_DEFS
 from bundles import BUNDLE_CATEGORY, bundles_for
@@ -134,6 +136,22 @@ def apply_library(branch: str):
     st.session_state.pop("ms_cap_txt", None)
 
 
+def fill_from_catalog():
+    """يملا التصميم من عرض في كتالوج العروض (سعر قبل/بعد + تحاليل)."""
+    o = OC.get(st.session_state.get("ms_cat"))
+    if not o or not o.get("after"):
+        return
+    f = OC.studio_fields(o)
+    st.session_state["ms_template"] = f.pop("template")
+    st.session_state["ms_photo_src"] = "sample"
+    st.session_state["ms_photo_sample"] = "sugar"
+    for k in FIELD_KEYS:
+        st.session_state[f"ms_{k}"] = f.get(k, DEFAULTS.get(k, ""))
+    st.session_state.update({"ms_ref_price": o["after"], "ms_ref_name": o["title"],
+                             "ms_ref_saving": OC.saving(o)})
+    st.session_state.pop("ms_cap_txt", None)
+
+
 @st.cache_data(ttl=120, show_spinner=False)
 def load_promos():
     s = store_from_secrets(st.secrets)
@@ -195,6 +213,10 @@ with st.sidebar:
                  format_func=lambda k: CAMPAIGNS[k]["label"], index=None,
                  placeholder="اختار حملة…", on_change=apply_library,
                  args=(st.session_state.get("ms_branch", DEFAULT_BRANCH),))
+    _cat_ids = [o["id"] for o in OC.selectable() if o["status"] == "current" and o.get("after")]
+    st.selectbox("📋 كتالوج العروض (بالأرقام)", _cat_ids, key="ms_cat", index=None,
+                 placeholder="اختار عرض…", on_change=fill_from_catalog,
+                 format_func=lambda i: OC.option_label(OC.get(i)))
     st.selectbox("الفرع", BRANCHES, key="ms_branch")
     st.text_input("رقم التواصل على التصميم", key="ms_phone")
     st.divider()
@@ -386,7 +408,7 @@ with right:
                          key="ms_inc_code")
     add_disc = st.toggle("إضافة تنويه طبي في النص", value=(kind != "offer"), key="ms_disc")
     auto = build_caption(kind, fields, lab=LAB_NAME_AR,
-                         phone=fields.get("phone", ""), maps_url=MAPS_URL,
+                         phone=fields.get("phone", ""), maps_url=branch_maps_url(st.session_state["ms_branch"]),
                          campaign_id=cid, include_code=inc_code,
                          disclaimer=DISCLAIMER if add_disc else "")
     if st.session_state.get("ms_cap_auto") != auto:

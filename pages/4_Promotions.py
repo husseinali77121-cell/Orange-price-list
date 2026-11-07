@@ -14,6 +14,7 @@ import streamlit as st
 from navigation import render_nav
 
 from access import require_access
+import offers_catalog as OC
 from bundles import BUNDLES as BUNDLE_DEFS
 from bundles import BUNDLE_CATEGORY
 from github_store import GithubStoreError, store_from_secrets
@@ -39,7 +40,7 @@ def load_index():
 IDX = load_index()
 store = store_from_secrets(st.secrets)
 today = date.today()
-tab_promos, tab_quality = st.tabs(["🎁 العروض", "🧹 جودة الأسعار"])
+tab_promos, tab_quality, tab_catalog = st.tabs(["🎁 العروض", "🧹 جودة الأسعار", "📋 Catalog"])
 
 # ------------------------------------------------------------
 # 🎁 العروض
@@ -173,3 +174,45 @@ with tab_quality:
     st.download_button("⬇️ تصدير قائمة الأسعار الحالية (CSV)",
                        to_csv(export, list(export[0])), file_name=f"price-list-{today}.csv",
                        mime="text/csv")
+
+
+# ------------------------------------------------------------
+# 📋 كتالوج العروض (القائمة الترحيبية + العروض بالأرقام)
+# ------------------------------------------------------------
+with tab_catalog:
+    CHECK = {"ok": "✅ متسق مع القائمة", "list_higher": "⚠️ القائمة أغلى من «قبل الخصم»",
+             "list_lower": "ℹ️ «قبل الخصم» أعلى من القائمة", "no_before": "توفير من القائمة",
+             "unknown": "—"}
+    st.caption("مصدر البيانات `offers_data.py` — الأرقام منقولة من رسائل واتساب المعمل. "
+               "عمود «مجموع القائمة» = مجموع أسعار تحاليل العرض في قائمتك الحالية.")
+    for c in OC.bundle_conflicts(IDX):
+        st.warning(f"⚠️ عرض {c['offer_id']} بـ {c['offer_price']:,} لنفس تحاليل باقة «{c['bundle']}» "
+                   f"في التطبيق بـ {c['bundle_price']:,} — اتفق على سعر واحد (bundles.py).")
+    show_legacy = st.toggle("اعرض النسخ القديمة (سعر قديم)", key="cat_legacy")
+    rows = []
+    for o in OC.OFFERS:
+        if o["status"] == "legacy" and not show_legacy:
+            continue
+        pc = OC.price_check(o, IDX)
+        rows.append({
+            "الرقم": o["no"] if o["no"] is not None else "★", "ID": o["id"],
+            "الحالة": OC.STATUS_LABELS[o["status"]], "العرض": o["title"],
+            "قبل": o["before"] or "", "بعد": o["after"] or "",
+            "خصم فعلي %": OC.discount_pct(o) or "",
+            "مجموع القائمة": pc["list_sum"] or "", "الفرق": pc["delta"] or "",
+            "الفحص": CHECK[pc["status"]], "ملاحظة داخلية": o["review"]})
+    rows.sort(key=lambda r: (999 if r["الرقم"] == "★" else r["الرقم"], r["ID"]))
+    st.dataframe(rows, use_container_width=True, hide_index=True)
+    pend = [o for o in OC.OFFERS if o["status"] == "pending"]
+    if pend:
+        st.info("أرقام في القائمة الترحيبية لسه من غير تفاصيل/سعر: " +
+                "، ".join(f"{o['no']}" for o in pend))
+    buf = io.StringIO()
+    if rows:
+        w = csv.DictWriter(buf, fieldnames=list(rows[0]))
+        w.writeheader()
+        w.writerows(rows)
+        st.download_button("⬇️ الكتالوج (CSV)", ("\ufeff" + buf.getvalue()).encode("utf-8"),
+                           file_name=f"offers-catalog-{today}.csv", mime="text/csv")
+    with st.expander("📋 القائمة الترحيبية (نص الرسالة)"):
+        st.code(OC.menu_message(), language=None)
