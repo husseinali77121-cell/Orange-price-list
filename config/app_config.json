@@ -24,5 +24,22 @@
     "زيارات منزلية (حسب الحجز)"
    ]
   }
- }
+ },
+ "campaigns": [
+  {
+   "id": "FHV-OCT-ZAYED",
+   "type": "free_home_visit",
+   "name": "FREE HOME VISIT – OCTOBER & ZAYED",
+   "min_net": 6000,
+   "areas": [
+    "6 October",
+    "Sheikh Zayed"
+   ],
+   "start": "2026-10-01",
+   "end": "2026-12-31",
+   "active": true,
+   "text_ar": "🎁 زيارة منزلية مجانية لحضرتك! للفواتير 6,000 ج أو أكثر في 6 أكتوبر والشيخ زايد — ساري حتى 30 نوفمبر 2026",
+   "text_en": "🎁 FREE HOME VISIT — Enjoy a complimentary home visit from Orange Lab! For eligible laboratory invoices of 6,000 EGP or more. 6 October & Sheikh Zayed · Valid until November 30, 2026"
+  }
+ ]
 }
