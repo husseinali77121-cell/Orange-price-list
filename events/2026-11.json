@@ -20,5 +20,16 @@
    "by": "Hussein",
    "note": "branch Diamond"
   }
+ },
+ {
+  "type": "config_change",
+  "quote_id": "CFG-campaigns",
+  "branch": "",
+  "ts": "2026-11-08T08:30:29",
+  "meta": {
+   "section": "campaigns",
+   "by": "Hussein",
+   "note": "campaigns"
+  }
  }
 ]
