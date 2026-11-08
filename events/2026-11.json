@@ -9,5 +9,16 @@
    "by": "Hussein",
    "note": "branch Orange (La Cité)"
   }
+ },
+ {
+  "type": "config_change",
+  "quote_id": "CFG-branches",
+  "branch": "",
+  "ts": "2026-11-08T08:29:09",
+  "meta": {
+   "section": "branches",
+   "by": "Hussein",
+   "note": "branch Diamond"
+  }
  }
 ]
