@@ -10,19 +10,22 @@
 import io
 import json
 import zipfile
-from datetime import date
+from datetime import date, datetime
 from urllib.parse import quote
 
 import streamlit as st
 import streamlit.components.v1 as components
 
+import config_store
 import offers_catalog as OC
 from brand import (DEFAULT_PHONE, FACEBOOK_PAGE_URL, LAB_NAME_AR, MAPS_URL,
                    branch_maps_url)
 from campaign_library import CAMPAIGNS, DISCLAIMER, campaign_fields
 from bundles import BUNDLES as BUNDLE_DEFS
 from bundles import BUNDLE_CATEGORY, bundles_for
-from github_store import GithubStoreError, events_path, store_from_secrets
+from access import secret_str
+from github_store import (GithubStoreError, events_path, read_events_range,
+                          store_from_secrets)
 from labs_price_list import LABS_DB
 from marketing import share_url
 from marketing_templates import (PRESETS, SAMPLE_PHOTOS, SIZE_LABELS, SIZES,
@@ -32,9 +35,10 @@ from marketing_templates import (PRESETS, SAMPLE_PHOTOS, SIZE_LABELS, SIZES,
 from navigation import render_nav
 from panels import BRANCHES, DEFAULT_BRANCH
 from share_widget import share_button_html
-from price_utils import MAX_WA_URL, build_index, bundle_saving, resolve_test
+from price_utils import (MAX_WA_URL, build_index, bundle_saving, format_phone_display,
+                         resolve_test, validate_phone)
 from promotions import PROMO_PATH, active_promotions
-from tracking import make_event, month_key
+from tracking import customer_profile, make_event, month_key, phone_key
 
 st.set_page_config(page_title="Orange Lab - Marketing Studio", page_icon="🎨",
                    layout="wide")
@@ -91,7 +95,8 @@ def on_preset_change():
 
 def fill_from_bundle(branch: str):
     """يملا حقول العرض من باقة حقيقية: الاسم + السعر + السعر قبل + المكونات."""
-    name = st.session_state.get("ms_bundle_pick")
+    pick = st.session_state.get("ms_bundle_pick") or ""
+    name = pick[2:] if pick.startswith("b:") else pick            # "b:Lipid Profile" أو الاسم لوحده
     b = next((x for x in bundles_for(branch) if x["name"] == name), None)
     rec = resolve_test(name, IDX).best if name else None
     if not b or not rec:
@@ -111,6 +116,30 @@ def fill_from_bundle(branch: str):
         "ms_ref_price": rec.price, "ms_ref_saving": saving, "ms_ref_name": name,
     })
     st.session_state.pop("ms_cap_txt", None)
+
+
+def pick_options(branch: str):
+    """خيارات الخانة الموحّدة: باقات التطبيق (Lipid/Liver/Kidney/Thyroid) + عروض المعمل بالرقم."""
+    return ([f"b:{b['name']}" for b in bundles_for(branch)]
+            + [f"o:{o['id']}" for o in OC.selectable() if o["status"] == "current" and o.get("after")])
+
+
+def pick_label(token: str) -> str:
+    kind, _, val = token.partition(":")
+    if kind == "b":
+        hits = IDX.get(val)
+        return f"📦 {val}" + (f" — {hits[0].price:,}" if hits else "")
+    o = OC.get(val)
+    return f"📋 {OC.option_label(o)} — {o['after']:,}"
+
+
+def fill_from_pick(branch: str):
+    """زرار واحد للاتنين: باقة حقيقية أو عرض بالرقم — والتصميم تحت بيتملا مباشرة."""
+    pick = st.session_state.get("ms_bundle_pick") or ""
+    if pick.startswith("o:"):
+        fill_from_catalog(pick[2:])
+    else:
+        fill_from_bundle(branch)
 
 
 def apply_library(branch: str):
@@ -136,9 +165,9 @@ def apply_library(branch: str):
     st.session_state.pop("ms_cap_txt", None)
 
 
-def fill_from_catalog():
+def fill_from_catalog(offer_id=None):
     """يملا التصميم من عرض في كتالوج العروض (سعر قبل/بعد + تحاليل)."""
-    o = OC.get(st.session_state.get("ms_cat"))
+    o = OC.get(offer_id or st.session_state.get("ms_cat"))
     if not o or not o.get("after"):
         return
     f = OC.studio_fields(o)
@@ -188,6 +217,36 @@ def fill_from_promo(branch: str):
     st.session_state.pop("ms_cap_txt", None)
 
 
+@st.cache_data(ttl=120, show_spinner=False)
+def load_cfg():
+    """إعدادات الفروع (رقم/عنوان/مواعيد/خريطة) — الافتراضي + اللي اتعدّل من صفحة الفروع."""
+    return config_store.load(store_from_secrets(st.secrets))
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def recent_events():
+    s_ = store_from_secrets(st.secrets)
+    if not s_:
+        return []
+    now_ = datetime.now()
+    y, m = now_.year, now_.month - 5
+    while m < 1:
+        m += 12
+        y -= 1
+    try:
+        return read_events_range(s_, f"{y:04d}-{m:02d}", month_key())
+    except GithubStoreError:
+        return []
+
+
+def on_branch_change():
+    """تبديل الفرع (دياموند / لاسيتيه): رقم الصورة بيتغيّر لرقم الفرع، والنص بيتبنّي من جديد."""
+    info = load_cfg()["branches"].get(st.session_state.get("ms_branch"), {})
+    if info.get("phone"):
+        st.session_state["ms_phone"] = info["phone"]
+    st.session_state.pop("ms_cap_txt", None)
+
+
 # ------------------------------------------------------------
 # حالة أولية
 # ------------------------------------------------------------
@@ -196,7 +255,9 @@ if "ms_template" not in st.session_state:
 if "ms_cid" not in st.session_state:
     st.session_state["ms_cid"] = make_campaign_id()
 st.session_state.setdefault("ms_branch", DEFAULT_BRANCH)
-st.session_state.setdefault("ms_phone", DEFAULT_PHONE)
+st.session_state.setdefault("ms_phone", load_cfg()["branches"].get(DEFAULT_BRANCH, {}).get("phone") or DEFAULT_PHONE)
+st.session_state.setdefault("ms_cust_name", "")
+st.session_state.setdefault("ms_cust_phone", "")
 st.session_state.setdefault("ms_size", "post")
 st.session_state.setdefault("ms_logged", set())
 
@@ -213,12 +274,18 @@ with st.sidebar:
                  format_func=lambda k: CAMPAIGNS[k]["label"], index=None,
                  placeholder="اختار حملة…", on_change=apply_library,
                  args=(st.session_state.get("ms_branch", DEFAULT_BRANCH),))
-    _cat_ids = [o["id"] for o in OC.selectable() if o["status"] == "current" and o.get("after")]
-    st.selectbox("📋 كتالوج العروض (بالأرقام)", _cat_ids, key="ms_cat", index=None,
-                 placeholder="اختار عرض…", on_change=fill_from_catalog,
-                 format_func=lambda i: OC.option_label(OC.get(i)))
-    st.selectbox("الفرع", BRANCHES, key="ms_branch")
-    st.text_input("رقم التواصل على التصميم", key="ms_phone")
+    _cfg = load_cfg()
+    st.radio("الفرع", BRANCHES, key="ms_branch", horizontal=True, on_change=on_branch_change,
+             format_func=lambda k: (_cfg["branches"].get(k) or {}).get("name_ar", k))
+    st.text_input("رقم التواصل على الصورة", key="ms_phone",
+                  help="بيتغيّر لرقم الفرع لما تبدّل الفرع، وتقدر تعدّله بإيدك")
+    st.markdown("##### 👤 العميل (للرسالة)")
+    st.text_input("اسم العميل", key="ms_cust_name", placeholder="اختياري — بيتكتب في الرسالة")
+    st.text_input("رقم موبايل العميل", key="ms_cust_phone", placeholder="01012345678",
+                  help="واتساب هيفتح على الرقم ده مباشرة")
+    _cp = validate_phone(st.session_state["ms_cust_phone"]) if st.session_state["ms_cust_phone"].strip() else None
+    if _cp is not None:
+        st.caption(f"✅ {format_phone_display(_cp.value)}" if _cp.ok else "⚠️ الرقم مش صالح — واتساب هيسيبك تختار جهة الاتصال")
     st.divider()
     fs_ = font_status()
     st.caption(f"🔤 الخط: {fs_['bold']} · التشكيل: {'✅ raqm' if fs_['mode'] == 'raqm' else '⚠️ بديل'}")
@@ -261,10 +328,12 @@ with left:
                                  for x in promos_now if x["id"] == i))
                 st.button("⚡ املا التصميم من العرض", on_click=fill_from_promo,
                           args=(st.session_state["ms_branch"],), use_container_width=True)
-        with st.expander("📦 املا من باقة حقيقية (السعر بيتسحب أوتوماتيك)", expanded=False):
-            names = [b["name"] for b in bundles_for(st.session_state["ms_branch"])]
-            st.selectbox("الباقة", names, key="ms_bundle_pick")
-            st.button("⚡ املا العرض من الباقة", on_click=fill_from_bundle,
+        with st.expander("📦 املا من باقة أو عرض بالرقم (السعر بيتسحب أوتوماتيك)", expanded=False):
+            st.selectbox("الباقة / رقم العرض", pick_options(st.session_state["ms_branch"]),
+                         key="ms_bundle_pick", format_func=pick_label,
+                         help="باقات التطبيق (Lipid / Liver / Kidney / Thyroid) وعروض المعمل بأرقامها. "
+                              "اكتب الرقم في الخانة للبحث.")
+            st.button("⚡ املا التصميم", on_click=fill_from_pick,
                       args=(st.session_state["ms_branch"],), use_container_width=True)
             if st.session_state.get("ms_ref_saving") == 0 and \
                     st.session_state.get("ms_ref_name"):
@@ -407,10 +476,17 @@ with right:
     inc_code = st.toggle("اكتب كود الحملة في النص (لتتبّع الحجوزات)", value=False,
                          key="ms_inc_code")
     add_disc = st.toggle("إضافة تنويه طبي في النص", value=(kind != "offer"), key="ms_disc")
+    add_branch = st.toggle("إضافة عنوان ومواعيد الفرع", value=True, key="ms_branch_info")
+    _binfo = load_cfg()["branches"].get(st.session_state["ms_branch"])
+    _first = (st.session_state["ms_cust_name"].strip().split() or [""])[0]
+    _greeting = f"أهلاً {_first} 🍊" if _first else ""
+    _branch_text = (config_store.branch_block({**_binfo, "phone": fields.get("phone") or _binfo.get("phone", "")})
+                    if (add_branch and _binfo) else "")
     auto = build_caption(kind, fields, lab=LAB_NAME_AR,
                          phone=fields.get("phone", ""), maps_url=branch_maps_url(st.session_state["ms_branch"]),
                          campaign_id=cid, include_code=inc_code,
-                         disclaimer=DISCLAIMER if add_disc else "")
+                         disclaimer=DISCLAIMER if add_disc else "",
+                         greeting=_greeting, branch_text=_branch_text)
     if st.session_state.get("ms_cap_auto") != auto:
         if st.session_state.get("ms_cap_txt") in (None, st.session_state.get("ms_cap_auto")):
             st.session_state["ms_cap_txt"] = auto
@@ -421,13 +497,25 @@ with right:
 
     # ---------------- المشاركة ----------------
     st.markdown("**📲 شارك**")
-    wa = share_url(caption)
-    if len(wa) > MAX_WA_URL:
-        st.warning("النص طويل على لينك واتساب — انسخه من تحت وابعته يدوي")
-        st.code(caption, language=None)
-    else:
+    _cust_phone = _cp.value if (_cp is not None and _cp.ok) else ""
+    _secret = secret_str(st.secrets, "quote_secret")
+    _prof = (customer_profile(recent_events(), phone_key(_cust_phone, _secret))
+             if (_cust_phone and _secret) else None)
+    _optout = bool(_prof and _prof["optout"])
+    if _optout:
+        st.warning("🚫 العميل ده طلب إيقاف الرسائل التسويقية — الإرسال متقفل ليه.")
+    wa = share_url(caption, _cust_phone)
+    if not _optout:
         s1, s2 = st.columns(2)
-        s1.link_button("🟢 واتساب (النص)", wa, use_container_width=True)
+        if len(wa) > MAX_WA_URL:                 # رسالة طويلة (مع بيانات الفرع) — نسخ ولصق
+            st.warning("النص طويل على لينك واتساب — انسخه (زرار النسخ فوق يمين المربع) والصقه في المحادثة")
+            st.code(caption, language=None)
+            s1.link_button("🟢 افتح محادثة واتساب (والصق النص)",
+                           f"https://wa.me/{_cust_phone}" if _cust_phone else "https://wa.me/",
+                           use_container_width=True)
+        else:
+            s1.link_button("🟢 واتساب للعميل" if _cust_phone else "🟢 واتساب (النص)", wa,
+                           use_container_width=True)
         fb_target = FACEBOOK_PAGE_URL or MAPS_URL
         fb = "https://www.facebook.com/sharer/sharer.php?u=" + quote(fb_target, safe="")
         if len(fb) + len(quote(caption, safe="")) < 1900:

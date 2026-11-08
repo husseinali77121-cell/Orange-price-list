@@ -19,7 +19,8 @@ from labs_price_list import LABS_DB
 from panels import BRANCHES
 from access import require_access
 from price_utils import build_index
-from tracking import marketing_kpis, month_key, summarize_events
+import config_store
+from tracking import crm_kpis, marketing_kpis, month_key, quote_records, summarize_events
 
 st.set_page_config(page_title="Orange Lab - Dashboard", page_icon="📊", layout="wide")
 
@@ -250,5 +251,55 @@ if camp:
 else:
     st.caption("لسه مفيش عروض مربوطة بكود حملة. حمّل تصميم من Marketing Studio، "
                "وخلّي الموظف يكتب الكود في صفحة الفاتورة.")
+
+st.divider()
+
+# ------------------------------------------------------------
+# 🧡 دورة العميل (CRM): من عرض السعر للحضور الفعلي
+# ------------------------------------------------------------
+
+_cfg = config_store.load(store)
+_fhv = {c["id"] for c in _cfg["campaigns"] if c.get("type") == "free_home_visit"}
+ck = crm_kpis(events, _fhv, _cfg["vip"])
+st.markdown("#### 🧡 Customer Journey — نجاح البرنامج = عملاء حضروا مش رسائل اتبعتت")
+j1, j2, j3, j4 = st.columns(4)
+j1.metric("Total Quotes", ck["total_quotes"])
+j2.metric("Total Quoted Value", f"{ck['quoted_value']:,} ج")
+j3.metric("Visit Rate", f"{ck['visit_rate_pct']}%", help="حضروا ÷ اتبعتلهم العرض فعلاً")
+j4.metric("Booked (جاي)", ck["booked"])
+j5, j6, j7, j8 = st.columns(4)
+j5.metric("Visited", ck["visited"])
+j6.metric("Lost Customers", ck["lost"])
+j7.metric("Recovered Customers", ck["recovered"], help="فاتوا وبعد المتابعة/الخصم رجعوا وحضروا")
+j8.metric("Discounts Granted", f"{ck['discounts_granted']:,} ج", help="الخصومات الإضافية الموافق عليها من الإدارة")
+k1, k2, k3, k4 = st.columns(4)
+k1.metric("Free Home Visits (عُرضت)", ck["free_visits_offered"])
+k2.metric("Free Home Visits (استُخدمت)", ck["free_visits_used"])
+k3.metric("VIP Customers", ck["vip_customers"])
+k4.metric("Gifts Delivered", ck["gifts_delivered"], help=f"تكلفتها {ck['gifts_cost']:,} ج")
+
+st.markdown("##### 👤 المقارنة بالموظف")
+if ck["by_staff"]:
+    st.dataframe(pd.DataFrame([
+        {"الموظف": k, "عروض": v["quotes"], "اتبعتت": v["sent"], "حضروا": v["visited"],
+         "Visit Rate %": v["visit_rate_pct"], "قيمة العروض": v["value"]}
+        for k, v in sorted(ck["by_staff"].items(), key=lambda x: -x[1]["quotes"])]),
+        use_container_width=True, hide_index=True)
+    st.caption("الموظف بيتسجّل من خانة «الموظف» في الفاتورة (قايمة الموظفين من إعدادات صفحة Customers).")
+
+with st.expander("🔎 Audit Log — قرارات الخصم الإضافي وتعديلات الإعدادات"):
+    _aud = [{"الوقت": r["recovery"]["decision"]["ts"][:16], "النوع": "خصم إضافي",
+             "التفاصيل": f"{r['quote_id']}: {r['recovery']['decision'].get('decision', '')} "
+                         f"{int(r['recovery']['decision'].get('amount', 0) or 0):,} ج — {r['recovery']['decision'].get('reason', '')}",
+             "بواسطة": r["recovery"]["decision"].get("approver", "")}
+            for r in quote_records(events).values() if r["recovery"] and r["recovery"]["decision"]]
+    _aud += [{"الوقت": e["ts"][:16], "النوع": "تعديل إعدادات",
+              "التفاصيل": f"{(e.get('meta') or {}).get('section', '')} {(e.get('meta') or {}).get('note', '')}",
+              "بواسطة": (e.get("meta") or {}).get("by", "")} for e in events if e.get("type") == "config_change"]
+    _aud.sort(key=lambda x: x["الوقت"], reverse=True)
+    if _aud:
+        st.dataframe(pd.DataFrame(_aud), use_container_width=True, hide_index=True)
+    else:
+        st.caption("مفيش قرارات أو تعديلات في الفترة دي")
 
 st.caption(f"({len(events)} حدث مسجّل من {start_m} لغاية {end_m})")

@@ -13,7 +13,9 @@ import streamlit as st
 
 from navigation import render_nav
 
-from access import require_access
+import campaigns as CP
+import config_store
+from access import admin_gate, require_access
 import offers_catalog as OC
 from bundles import BUNDLES as BUNDLE_DEFS
 from bundles import BUNDLE_CATEGORY
@@ -40,7 +42,7 @@ def load_index():
 IDX = load_index()
 store = store_from_secrets(st.secrets)
 today = date.today()
-tab_promos, tab_quality, tab_catalog = st.tabs(["🎁 العروض", "🧹 جودة الأسعار", "📋 Catalog"])
+tab_promos, tab_quality, tab_catalog, tab_camp = st.tabs(["🎁 العروض", "🧹 جودة الأسعار", "📋 Catalog", "🎯 Campaigns"])
 
 # ------------------------------------------------------------
 # 🎁 العروض
@@ -216,3 +218,48 @@ with tab_catalog:
                            file_name=f"offers-catalog-{today}.csv", mime="text/csv")
     with st.expander("📋 القائمة الترحيبية (نص الرسالة)"):
         st.code(OC.menu_message(), language=None)
+
+
+# ------------------------------------------------------------
+# 🎯 حملات المزايا (زيارة منزلية مجانية…) — القواعد قابلة للتعديل من هنا
+# ------------------------------------------------------------
+with tab_camp:
+    st.caption("ميزة مش خصم: لما صافي التحاليل (بعد خصوماتها) يوصل للحد في منطقة الحملة، الفاتورة بتنبّه "
+               "«FREE HOME VISIT ELIGIBLE» والعرض بيتضاف لرسالة العميل. الزيارة مجانية بس — مش بتتخصم من التحاليل.")
+    if not store:
+        st.warning("حفظ الحملات محتاج GitHub (gh_events_token / gh_events_repo في Secrets).")
+    ccfg = config_store.load(store)
+    if admin_gate(st, key="camp_admin_pw"):
+        who = st.text_input("اسمك (كل تعديل بيتسجّل باسمك)", key="camp_who")
+        updated = []
+        for i, c in enumerate(ccfg["campaigns"]):
+            st.markdown(f"##### 🎁 {c['name']}  `{c['id']}` — {CP.campaign_state(c, today)}")
+            k = f"camp{i}"
+            n1, n2 = st.columns(2)
+            name = n1.text_input("اسم الحملة", c["name"], key=f"{k}_name")
+            min_net = n2.number_input("الحد الأدنى لصافي التحاليل (ج)", min_value=1, step=100, value=int(c["min_net"]), key=f"{k}_min")
+            areas = st.multiselect("المناطق", ccfg["areas"], default=[a for a in c["areas"] if a in ccfg["areas"]], key=f"{k}_areas")
+            d1, d2, d3 = st.columns([1, 1, 1])
+            start = d1.date_input("من", value=date.fromisoformat(c["start"]), key=f"{k}_start")
+            end = d2.date_input("لغاية (شامل)", value=date.fromisoformat(c["end"]), key=f"{k}_end")
+            active = d3.toggle("شغّالة", value=bool(c.get("active", True)), key=f"{k}_active")
+            t_ar = st.text_area("نص الرسالة بالعربي", c.get("text_ar", ""), key=f"{k}_tar", height=80)
+            t_en = st.text_area("Message (English)", c.get("text_en", ""), key=f"{k}_ten", height=80)
+            updated.append({**c, "name": name.strip(), "min_net": int(min_net), "areas": list(areas),
+                            "start": start.isoformat(), "end": end.isoformat(), "active": bool(active),
+                            "text_ar": t_ar.strip(), "text_en": t_en.strip()})
+        if st.button("💾 احفظ الحملات", type="primary", key="camp_save"):
+            errs = [e for c in updated for e in CP.validate_campaign(c)]
+            if errs:
+                for e in errs:
+                    st.error(e)
+            elif not store:
+                st.error("التتبّع مش متظبط — مقدرتش أحفظ")
+            else:
+                try:
+                    config_store.save_section(store, "campaigns", updated, who=who, note="campaigns")
+                    st.success("اتحفظ ✅ — هيظهر في الفاتورة خلال دقيقتين")
+                except ValueError as e:
+                    st.error(str(e))
+                except GithubStoreError as e:
+                    st.error(f"مقدرتش أحفظ: {e}")
