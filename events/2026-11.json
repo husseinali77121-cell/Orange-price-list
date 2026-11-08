@@ -31,5 +31,20 @@
    "by": "Hussein",
    "note": "campaigns"
   }
+ },
+ {
+  "type": "quote",
+  "quote_id": "OR-261108-3141",
+  "branch": "Orange (La Cité)",
+  "ts": "2026-11-08T09:23:54",
+  "referral_source": "غير محدد",
+  "total": 400,
+  "count": 1,
+  "items": [
+   "CBC"
+  ],
+  "pk": "5a11439655a4bf05",
+  "visit_type": "lab",
+  "area": "6 October"
  }
 ]
