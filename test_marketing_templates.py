@@ -341,7 +341,8 @@ check("page shows PNG + JPG download", sum(1 for c in fake.calls if c[0] == "dow
 check("page has WhatsApp + Facebook links", any("واتساب" in str(l) for l in labels)
       and any("فيسبوك" in str(l) for l in labels), True)
 wa = next(c[2] for c in fake.calls if c[0] == "link" and "واتساب" in c[1])
-check("whatsapp link carries the caption", wa.startswith("https://wa.me/?text="), True)
+check("whatsapp: caption too long for a link (branch block) -> shown for copy + chat link",
+      (wa.startswith("https://wa.me/"), any("للحجز" in str(c[1][0]) for c in fake.calls if c[0] == "code")), (True, True))
 check("share component embeds image + caption", len(html_out) == 1 and "navigator.share" in html_out[0]
       and "const B64" in html_out[0], True)
 check("no script-break in share html", html_out[0].count("</script>") == 1, True)

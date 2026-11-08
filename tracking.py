@@ -42,7 +42,9 @@ LOST_SALE_REASONS = [
     "مش عارفين",
 ]
 
-EVENT_TYPES = ("quote", "lost_sale", "converted", "campaign", "sent", "followup", "optout")
+EVENT_TYPES = ("quote", "lost_sale", "converted", "campaign", "sent", "followup", "optout",
+               "booked", "visited", "recovery_request", "recovery_decision", "gift",
+               "vip_set", "vip_contact", "config_change")
 
 
 # ------------------------------------------------------------
@@ -56,7 +58,8 @@ def make_event(event_type: str, quote_id: str, branch: str = "",
                now: Optional[datetime] = None,
                meta: Optional[dict] = None,
                campaign_id: str = "", phone_key: str = "", discount: int = 0,
-               contact: Optional[dict] = None) -> dict:
+               contact: Optional[dict] = None, staff: str = "", visit_type: str = "",
+               area: str = "", benefits: Optional[List[str]] = None, parent: str = "") -> dict:
     """
     event_type: "quote" (اتجهّز/اتبعت) | "lost_sale" (ماتحولش) |
                 "converted" (اتباع فعلاً) | "campaign" (تصميم إعلاني اتنزّل/اتشارك —
@@ -64,6 +67,11 @@ def make_event(event_type: str, quote_id: str, branch: str = "",
                 "sent" (الموظف أكّد إن العرض اتبعت للعميل فعلاً — "quote" لوحده
                 معناه اتجهّز بس) | "followup" (محاولة متابعة؛ meta.next_due = ميعاد
                 التالية) | "optout" (العميل طلب إيقاف الرسائل — بالـ phone_key)
+    دورة العميل: sent ← booked (meta.appointment) ← visited | lost_sale. الاسترجاع:
+    recovery_request (meta: proposed_amount, reason, requested_by) ثم recovery_decision
+    (meta: decision approved|rejected|counter, amount, approver, reason). gift: هدية
+    عميل جديد (meta: gift_type, cost, delivered_by, note). vip_set / vip_contact: بصمة
+    العميل (meta.vip / meta.result). config_change: سجل تعديلات إعدادات الإدارة.
     phone_key: بصمة HMAC للموبايل (phone_key()) — بتخلّينا نعرف عميل متكرر/موقوف
                من غير ما نخزّن الرقم نفسه. contact: اسم+رقم — بيتخزّن بس لو
                secrets: store_contacts = true (ولازم الريبو يكون Private).
@@ -101,6 +109,16 @@ def make_event(event_type: str, quote_id: str, branch: str = "",
         ev["discount"] = int(discount)
     if contact:
         ev["contact"] = dict(contact)
+    if staff:
+        ev["staff"] = staff
+    if visit_type:
+        ev["visit_type"] = visit_type            # "lab" | "home"
+    if area:
+        ev["area"] = area
+    if benefits:
+        ev["benefits"] = list(benefits)          # أكواد حملات المزايا (زيارة مجانية…)
+    if parent:
+        ev["parent"] = parent                    # عرض جديد مرتبط بعرض قديم (استرجاع عميل)
     return ev
 
 
@@ -131,41 +149,53 @@ def _parse_ts(ts: str) -> Optional[datetime]:
         return None
 
 
+_LIFECYCLE = ("quote", "sent", "booked", "visited", "followup", "optout", "converted",
+              "lost_sale", "recovery_request", "recovery_decision", "gift")
+
+
 def quote_records(events: List[dict]) -> Dict[str, dict]:
     """
-    كل عرض بتاريخه الكامل (من أحداث quote/sent/followup/converted/lost_sale/optout):
-      qid -> {quote_ts, sent_ts, branch, source, total, discount, items,
-              campaign_id, pk, contact, decision, decision_ts, followups:[ts],
-              next_due, optout}
-    الأحدث بالوقت هو اللي بيكسب في القرار؛ campaign/غيره مابيتحسبش كعرض.
+    كل عرض بدورة حياته الكاملة (من أحداث quote/sent/booked/visited/followup/converted/
+    lost_sale/optout/recovery_*/gift):
+      quote_ts, sent_ts, booked_ts, appointment, branch, source, total, discount, items,
+      campaign_id, pk, contact, decision ("converted"|"lost_sale"), decision_ts, followups,
+      next_due, optout, staff, visit_type, area, benefits, parent, recovery, gift
+    "visited" = "converted" (نفس القرار — الحضور الفعلي). الأحدث بالوقت هو اللي بيكسب.
     """
     recs: Dict[str, dict] = {}
 
     def slot(q):
         return recs.setdefault(q, {
-            "quote_id": q, "quote_ts": "", "sent_ts": "", "branch": "", "source": "",
-            "total": 0, "discount": 0, "items": [], "campaign_id": "", "pk": "",
-            "contact": None, "decision": "", "decision_ts": "", "followups": [],
-            "next_due": "", "_nd_ts": "", "optout": False})
+            "quote_id": q, "quote_ts": "", "sent_ts": "", "booked_ts": "", "appointment": "",
+            "branch": "", "source": "", "total": 0, "discount": 0, "items": [],
+            "campaign_id": "", "pk": "", "contact": None, "decision": "", "decision_ts": "",
+            "followups": [], "next_due": "", "_nd_ts": "", "optout": False, "staff": "",
+            "visit_type": "", "area": "", "benefits": [], "parent": "", "recoveries": [],
+            "recovery": None, "gift": None, "lost_reason": ""})
 
     for e in events:
         q = e.get("quote_id") or ""
         typ = e.get("type")
-        if typ == "campaign" or not q:
+        if typ not in _LIFECYCLE or not q:
             continue
         r = slot(q)
+        ts = e.get("ts", "")
         if e.get("pk"):
             r["pk"] = e["pk"]
         if e.get("contact"):
             r["contact"] = e["contact"]
+        for k in ("staff", "visit_type", "area", "parent"):
+            if e.get(k):
+                r[k] = e[k]
+        if e.get("benefits"):
+            r["benefits"] = list(e["benefits"])
         if typ == "quote":
-            r.update(quote_ts=e.get("ts", ""), branch=e.get("branch", ""),
-                     source=e.get("referral_source", ""), total=int(e.get("total", 0)),
-                     discount=int(e.get("discount", 0)), items=list(e.get("items", [])),
-                     campaign_id=e.get("campaign_id", ""))
+            r.update(quote_ts=ts, branch=e.get("branch", ""), source=e.get("referral_source", ""),
+                     total=int(e.get("total", 0)), discount=int(e.get("discount", 0)),
+                     items=list(e.get("items", [])), campaign_id=e.get("campaign_id", ""))
         elif typ == "sent":
-            if not r["sent_ts"] or e.get("ts", "") >= r["sent_ts"]:
-                r["sent_ts"] = e.get("ts", "")
+            if not r["sent_ts"] or ts >= r["sent_ts"]:
+                r["sent_ts"] = ts
                 # الأرقام وقت الإرسال هي الأدق (الخصم/الإجمالي ممكن يتغيّر بعد أول quote)
                 if e.get("total"):
                     r["total"] = int(e["total"])
@@ -177,19 +207,57 @@ def quote_records(events: List[dict]) -> Dict[str, dict]:
                 r["branch"] = e.get("branch", "")
             if e.get("campaign_id") and not r["campaign_id"]:
                 r["campaign_id"] = e["campaign_id"]
+        elif typ == "booked":
+            if ts >= r["booked_ts"]:
+                r["booked_ts"] = ts
+                r["appointment"] = (e.get("meta") or {}).get("appointment", "")
+            if not r["branch"]:
+                r["branch"] = e.get("branch", "")
         elif typ == "followup":
-            r["followups"].append(e.get("ts", ""))
+            r["followups"].append(ts)
             nd = (e.get("meta") or {}).get("next_due", "")
-            if nd and e.get("ts", "") >= r["_nd_ts"]:     # آخر محاولة بالوقت هي اللي ميعادها يمشي
-                r["next_due"], r["_nd_ts"] = nd, e.get("ts", "")
+            if nd and ts >= r["_nd_ts"]:     # آخر محاولة بالوقت هي اللي ميعادها يمشي
+                r["next_due"], r["_nd_ts"] = nd, ts
         elif typ == "optout":
             r["optout"] = True
-        elif typ in ("converted", "lost_sale"):
-            if e.get("ts", "") >= r["decision_ts"]:
-                r["decision"], r["decision_ts"] = typ, e.get("ts", "")
+        elif typ in ("converted", "visited", "lost_sale"):
+            if ts >= r["decision_ts"]:
+                r["decision"] = "lost_sale" if typ == "lost_sale" else "converted"
+                r["decision_ts"] = ts
+                r["lost_reason"] = e.get("reason", "") if typ == "lost_sale" else ""
                 if e.get("total") and not r["total"]:
                     r["total"] = int(e["total"])
+        elif typ in ("recovery_request", "recovery_decision"):
+            r["recoveries"].append({"kind": "request" if typ == "recovery_request" else "decision",
+                                    "ts": ts, **(e.get("meta") or {})})
+        elif typ == "gift":
+            if not r["gift"] or ts >= r["gift"]["ts"]:
+                r["gift"] = {"ts": ts, **(e.get("meta") or {})}
+
+    for r in recs.values():
+        reqs = [x for x in r["recoveries"] if x["kind"] == "request"]
+        decs = [x for x in r["recoveries"] if x["kind"] == "decision"]
+        if reqs:
+            lr = max(reqs, key=lambda x: x["ts"])
+            ld = max(decs, key=lambda x: x["ts"]) if decs else None
+            if ld is None or ld["ts"] < lr["ts"]:
+                r["recovery"] = {"status": "pending", "request": lr, "decision": None}
+            else:
+                r["recovery"] = {"status": ld.get("decision", "rejected"), "request": lr, "decision": ld}
     return recs
+
+
+def stage_of(r: dict) -> str:
+    """new | sent | booked | visited | lost — حجز أحدث من القرار = العميل رجع (booked)."""
+    if r["booked_ts"] and r["booked_ts"] > r["decision_ts"]:
+        return "booked"
+    if r["decision"] == "converted":
+        return "visited"
+    if r["decision"] == "lost_sale":
+        return "lost"
+    if r["booked_ts"]:
+        return "booked"
+    return "sent" if r["sent_ts"] else "new"
 
 
 def optout_keys(events: List[dict]) -> set:
@@ -199,27 +267,36 @@ def optout_keys(events: List[dict]) -> set:
 
 def followup_queue(events: List[dict], now: Optional[datetime] = None, *,
                    first_after_hours: float = 24, stale_after_days: float = 14,
-                   max_attempts: int = 3, require_sent: bool = True) -> dict:
+                   max_attempts: int = 3, require_sent: bool = True,
+                   visit_grace_hours: float = 3) -> dict:
     """
-    قايمة «متابعة النهاردة»: عروض اتبعتت (sent) ولسه مفيش قرار ومش موقوفة.
-      due       = ميعادها جه (متأخر الأول)
-      upcoming  = لسه
-      exhausted = اتعملها max_attempts محاولات من غير نتيجة
-      stale     = أقدم من stale_after_days (بنعتبرها ماتت)
-    كل عنصر: سجل quote_records + due_at (datetime) + attempts.
+    قايمة المتابعة:
+      due / upcoming / exhausted / stale = عروض اتبعتت (sent) من غير حجز ولا قرار
+      visit_check = حجز ميعاده عدّى (أو عدّى 24 ساعة من الحجز من غير ميعاد) ولسه مفيش حضور
+      booked      = حجوزات جاية
+    كل عنصر: سجل quote_records + due_at + attempts + age_days.
     """
     now = now or datetime.now()
     opted = optout_keys(events)
-    out = {"due": [], "upcoming": [], "exhausted": [], "stale": []}
+    out = {"due": [], "upcoming": [], "exhausted": [], "stale": [], "visit_check": [], "booked": []}
     for q, r in quote_records(events).items():
-        if r["decision"] or r["optout"] or (r["pk"] and r["pk"] in opted):
+        stage = stage_of(r)
+        if stage in ("visited", "lost") or r["optout"] or (r["pk"] and r["pk"] in opted):
+            continue
+        item = dict(r)
+        item["attempts"] = len(r["followups"])
+        if stage == "booked":
+            appt = _parse_ts(r["appointment"]) if r["appointment"] else None
+            due_at = (appt + timedelta(hours=visit_grace_hours)) if appt else \
+                (_parse_ts(r["booked_ts"]) + timedelta(hours=24))
+            item["due_at"] = due_at
+            item["age_days"] = (now - _parse_ts(r["booked_ts"])).total_seconds() / 86400.0
+            out["visit_check" if due_at <= now else "booked"].append(item)
             continue
         base_ts = r["sent_ts"] or ("" if require_sent else r["quote_ts"])
         base = _parse_ts(base_ts)
         if base is None:
             continue
-        item = dict(r)
-        item["attempts"] = len(r["followups"])
         nd = _parse_ts(r["next_due"]) if r["next_due"] else None
         last = _parse_ts(max(r["followups"])) if r["followups"] else None
         due_at = nd or ((last or base) + timedelta(hours=first_after_hours))
@@ -233,8 +310,37 @@ def followup_queue(events: List[dict], now: Optional[datetime] = None, *,
             out["due"].append(item)
         else:
             out["upcoming"].append(item)
-    out["due"].sort(key=lambda x: x["due_at"])
-    out["upcoming"].sort(key=lambda x: x["due_at"])
+    for k in out:
+        out[k].sort(key=lambda x: x["due_at"])
+    return out
+
+
+def recovery_queue(events: List[dict]) -> dict:
+    """
+    استرجاع العملاء اللي ماحضروش:
+      pending = طلبات خصم إضافي مستنية قرار الإدارة
+      ready   = موافق عليها (approved/counter) ولسه ماتعملش لها عرض جديد
+      done    = اتعمل لها عرض جديد، أو اترفضت
+    "عرض جديد" = quote فيه parent = العرض القديم.
+    """
+    recs = quote_records(events)
+    children: Dict[str, List[dict]] = {}
+    for r in recs.values():
+        if r["parent"]:
+            children.setdefault(r["parent"], []).append(r)
+    out = {"pending": [], "ready": [], "done": []}
+    for q, r in recs.items():
+        rc = r["recovery"]
+        if not rc:
+            continue
+        item = {**r, "children": children.get(q, [])}
+        if rc["status"] == "pending":
+            out["pending"].append(item)
+        elif rc["status"] in ("approved", "counter") and not item["children"]:
+            out["ready"].append(item)
+        else:
+            out["done"].append(item)
+    out["pending"].sort(key=lambda x: x["recovery"]["request"]["ts"])
     return out
 
 
@@ -436,4 +542,167 @@ def marketing_kpis(events: List[dict]) -> dict:
         "lost_value": sum(r["total"] for r in recs if r["decision"] == "lost_sale"),
         "by_branch": group(lambda r: r["branch"]),
         "campaign_stats": group(lambda r: r["campaign_id"]),
+    }
+
+
+# ------------------------------------------------------------
+# العملاء (CRM): تصنيف + VIP + متابعة VIP شهرية + هدايا العملاء الجدد
+# ------------------------------------------------------------
+
+DEFAULT_VIP_RULES = {"min_visits": 3, "min_spend": 10000, "window_days": 365, "cooldown_days": 30}
+CUSTOMER_LABELS = ("New", "Returning", "Regular", "VIP")
+
+
+def customers(events: List[dict], vip: Optional[dict] = None,
+              now: Optional[datetime] = None) -> List[dict]:
+    """
+    ملف لكل عميل (بالبصمة pk): عروضه، زياراته (stage visited)، إنفاقه، آخر زيارة/عرض/تواصل.
+    التصنيف: New (مفيش زيارة) · Returning (زيارة واحدة) · Regular (زيارتين+) ·
+    VIP = يدوي (vip_set) أو بالقواعد (زيارات >= min_visits أو إنفاق >= min_spend
+    خلال window_days). vip_set false = استبعاد يدوي حتى لو القواعد اتحققت.
+    الاسم/الرقم موجودين بس لو store_contacts شغّال وقت «تم الإرسال».
+    """
+    rules = {**DEFAULT_VIP_RULES, **(vip or {})}
+    now = now or datetime.now()
+    since = (now - timedelta(days=int(rules["window_days"]))).isoformat(timespec="seconds")
+    manual: Dict[str, dict] = {}
+    contacted: Dict[str, dict] = {}
+    for e in events:
+        pk = e.get("pk")
+        if not pk:
+            continue
+        if e.get("type") == "vip_set" and e.get("ts", "") >= manual.get(pk, {}).get("ts", ""):
+            manual[pk] = {"ts": e.get("ts", ""), "vip": bool((e.get("meta") or {}).get("vip"))}
+        elif e.get("type") == "vip_contact" and e.get("ts", "") >= contacted.get(pk, {}).get("ts", ""):
+            contacted[pk] = {"ts": e.get("ts", ""), **(e.get("meta") or {})}
+    opted = optout_keys(events)
+    by_pk: Dict[str, List[dict]] = {}
+    for r in quote_records(events).values():
+        if r["pk"]:
+            by_pk.setdefault(r["pk"], []).append(r)
+    out = []
+    for pk, rs in by_pk.items():
+        visited = [r for r in rs if stage_of(r) == "visited"]
+        recent = [r for r in visited if r["decision_ts"] >= since]
+        spend_recent = sum(r["total"] for r in recent)
+        contact = next((r["contact"] for r in sorted(rs, key=lambda x: x["quote_ts"] or x["sent_ts"],
+                                                     reverse=True) if r["contact"]), None) or {}
+        m = manual.get(pk)
+        if m is not None:
+            is_vip = m["vip"]
+        else:
+            is_vip = len(recent) >= int(rules["min_visits"]) or spend_recent >= int(rules["min_spend"])
+        label = "VIP" if is_vip else ("Regular" if len(visited) >= 2 else ("Returning" if visited else "New"))
+        last_c = contacted.get(pk)
+        out.append({
+            "pk": pk, "name": contact.get("name", ""), "phone": contact.get("phone", ""),
+            "has_contact": bool(contact.get("phone")), "label": label,
+            "manual_vip": None if m is None else m["vip"],
+            "quotes": len(rs), "visits": len(visited), "spend": sum(r["total"] for r in visited),
+            "spend_recent": spend_recent, "visits_recent": len(recent),
+            "last_visit": max((r["decision_ts"] for r in visited), default=""),
+            "last_quote": max((r["quote_ts"] or r["sent_ts"] for r in rs), default=""),
+            "last_branch": next((r["branch"] for r in sorted(rs, key=lambda x: x["quote_ts"], reverse=True)
+                                 if r["branch"]), ""),
+            "last_contact": last_c["ts"] if last_c else "",
+            "last_contact_result": (last_c or {}).get("result", ""),
+            "optout": pk in opted})
+    out.sort(key=lambda c: (-c["spend"], c["pk"]))
+    return out
+
+
+def vip_followups(custs: List[dict], now: Optional[datetime] = None,
+                  cooldown_days: int = 30) -> dict:
+    """
+    «Monthly VIP Follow-Up»: VIP عنده بيانات تواصل، مش موقوف، ومتكلّمش من cooldown_days.
+      due = مستحق · recent = اتكلّم قريب (مايتكررش) · no_contact = VIP من غير رقم متخزّن
+    """
+    now = now or datetime.now()
+    limit = (now - timedelta(days=int(cooldown_days))).isoformat(timespec="seconds")
+    out = {"due": [], "recent": [], "no_contact": []}
+    for c in custs:
+        if c["label"] != "VIP" or c["optout"]:
+            continue
+        if not c["has_contact"]:
+            out["no_contact"].append(c)
+        elif c["last_contact"] and c["last_contact"] > limit:
+            out["recent"].append(c)
+        else:
+            out["due"].append(c)
+    return out
+
+
+def gift_queue(events: List[dict]) -> List[dict]:
+    """
+    «NEW CUSTOMER – WELCOME GIFT»: زيارة منزلية (حجز/حضور) لعميل جديد ولسه الهدية
+    ماتسلّمتش. عميل جديد = مفيش زيارة سابقة بنفس البصمة. من غير بصمة = بنفترض جديد
+    ونعلّمه unverified_new عشان الدكتور يتأكد.
+    """
+    recs = quote_records(events)
+    out = []
+    for r in recs.values():
+        if r["visit_type"] != "home" or stage_of(r) not in ("booked", "visited") or r["gift"]:
+            continue
+        mine = r["booked_ts"] or r["quote_ts"] or "9"
+        new = not any(o is not r and o["pk"] == r["pk"] and stage_of(o) == "visited"
+                      and o["decision_ts"] and o["decision_ts"] < mine
+                      for o in recs.values()) if r["pk"] else True
+        if new:
+            out.append({**r, "unverified_new": not r["pk"]})
+    out.sort(key=lambda x: x["appointment"] or x["booked_ts"] or x["quote_ts"])
+    return out
+
+
+def gift_stats(events: List[dict]) -> dict:
+    """عدد الهدايا المسلّمة وتكلفتها (من meta.cost) وتوزيعها بالنوع."""
+    gifts = [r["gift"] for r in quote_records(events).values() if r["gift"]]
+    by_type: Dict[str, int] = {}
+    for g in gifts:
+        by_type[g.get("gift_type", "?")] = by_type.get(g.get("gift_type", "?"), 0) + 1
+    return {"count": len(gifts), "cost": sum(int(g.get("cost", 0) or 0) for g in gifts),
+            "by_type": by_type}
+
+
+def crm_kpis(events: List[dict], fhv_ids=(), vip: Optional[dict] = None,
+             now: Optional[datetime] = None) -> dict:
+    """
+    مؤشرات دورة العميل (الإدارة): عروض، قيمة العروض، حجوزات، حضور، فاتوا، استرجاع،
+    خصومات إضافية، زيارات مجانية، VIP، هدايا، ومقارنة بالموظف.
+      visit_rate_pct = حضروا ÷ اتبعتلهم العرض فعلاً (الحضور مش عدد الرسائل)
+      recovered = عروض فاتت واتعمل لها عرض جديد (parent) واتحضر
+      discounts_granted = مجموع الخصم الإضافي الموافق عليه (recovery_decision)
+    """
+    recs = list(quote_records(events).values())
+    prepared = [r for r in recs if r["quote_ts"]]
+    stages = {r["quote_id"]: stage_of(r) for r in prepared}
+    sent = [r for r in prepared if r["sent_ts"]]
+    visited = [r for r in prepared if stages[r["quote_id"]] == "visited"]
+    by_id = {r["quote_id"]: r for r in recs}
+    recovered = {r["parent"] for r in visited if r["parent"] and r["parent"] in by_id
+                 and stage_of(by_id[r["parent"]]) == "lost"}
+    granted = sum(int(r["recovery"]["decision"].get("amount", 0) or 0) for r in recs
+                  if r["recovery"] and r["recovery"]["status"] in ("approved", "counter")
+                  and r["recovery"]["decision"])
+    fhv = [r for r in prepared if set(r["benefits"]) & set(fhv_ids)]
+    by_staff: Dict[str, dict] = {}
+    for r in prepared:
+        k = r["staff"] or "—"
+        s = by_staff.setdefault(k, {"quotes": 0, "sent": 0, "visited": 0, "value": 0})
+        s["quotes"] += 1
+        s["sent"] += 1 if r["sent_ts"] else 0
+        s["visited"] += 1 if stages[r["quote_id"]] == "visited" else 0
+        s["value"] += r["total"]
+    for s in by_staff.values():
+        s["visit_rate_pct"] = _pct(s["visited"], s["sent"])
+    gs = gift_stats(events)
+    return {
+        "total_quotes": len(prepared), "quoted_value": sum(r["total"] for r in prepared),
+        "sent": len(sent), "booked": sum(1 for v in stages.values() if v == "booked"),
+        "visited": len(visited), "lost": sum(1 for v in stages.values() if v == "lost"),
+        "visit_rate_pct": _pct(sum(1 for r in sent if stages[r["quote_id"]] == "visited"), len(sent)),
+        "recovered": len(recovered), "discounts_granted": granted,
+        "free_visits_offered": len(fhv),
+        "free_visits_used": sum(1 for r in fhv if r["visit_type"] == "home" and stages[r["quote_id"]] == "visited"),
+        "vip_customers": sum(1 for c in customers(events, vip, now) if c["label"] == "VIP"),
+        "gifts_delivered": gs["count"], "gifts_cost": gs["cost"], "by_staff": by_staff,
     }

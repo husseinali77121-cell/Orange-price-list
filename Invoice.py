@@ -11,7 +11,8 @@ import json
 import re
 import uuid
 from dataclasses import replace as dc_replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from datetime import time as dtime
 from io import BytesIO
 
 import streamlit as st
@@ -62,6 +63,9 @@ from price_utils import (MATCH_ALIAS, MATCH_AMBIGUOUS, MATCH_EXACT,
                          validate_patient_name, validate_phone)
 from tracking import (LOST_SALE_REASONS, REFERRAL_SOURCES, customer_profile,
                       make_event, month_key, phone_key, summarize_events)
+import campaigns as CP
+import config_store
+import offer_matcher as OM
 from access import secret_bool, secret_float
 from promotions import (PROMO_PATH, active_promotions, best_promo_for,
                         discount_pct_of, needs_approval, pin_ok)
@@ -160,6 +164,12 @@ def load_promos():
         return []
 
 
+@st.cache_data(ttl=120, show_spinner=False)
+def load_config():
+    """إعدادات الإدارة: بيانات الفروع، حملات المزايا، المناطق، قايمة الموظفين (config_store)."""
+    return config_store.load(store_from_secrets(st.secrets))
+
+
 @st.cache_data(show_spinner=False, max_entries=12)
 def packages_card(rows_json: str, size: str, phone: str):
     """صورة «عروض الباقات» بقالب Orange — (PNG, JPG). الأسعار من القائمة الحالية."""
@@ -229,6 +239,10 @@ DEFAULTS = {
     "saved_at": "",           # وقت توليده (ISO) — لحساب صلاحية الـ 48 ساعة
     "referral_source": REFERRAL_SOURCES[-1],
     "campaign_id": "",        # كود حملة Marketing Studio (اختياري) — بيربط العرض بالحملة
+    "staff_name": "",         # الموظف (للمقارنة في الداشبورد) — بيفضل بين الفواتير
+    "area": "",               # منطقة العميل (لحملات المزايا زي الزيارة المجانية)
+    "visit_type": "lab",      # lab | home
+    "parent_quote": "",       # عرض قديم اتعمل منه الجديد (استرجاع عميل بموافقة الإدارة)
 }
 for k, v in DEFAULTS.items():
     st.session_state.setdefault(k, v)
@@ -271,7 +285,16 @@ if not st.session_state.get("_quote_link_checked"):
             st.session_state["quote_id"] = data.get("id", "")
             _cid = str(data.get("cid", "") or "")
             st.session_state["campaign_id"] = _cid if CAMPAIGN_RE.match(_cid) else ""
-            flash("info", f"📂 اتفتح عرض محفوظ: {data.get('id','')}")
+            st.session_state["area"] = str(data.get("area", "") or "")
+            st.session_state["visit_type"] = "home" if data.get("vt") == "home" else "lab"
+            st.session_state["parent_quote"] = str(data.get("par", "") or "")
+            if data.get("appr"):           # عرض استرجاع: خصمه معتمد من الإدارة (اللينك موقّع ومشفّر)
+                try:
+                    st.session_state[f"_appr_{data.get('id', '')}_{int(round(float(data.get('dval', 0))))}"] = True
+                except (TypeError, ValueError):
+                    pass
+            flash("info", f"📂 اتفتح عرض محفوظ: {data.get('id','')}"
+                  + (f" — مرتبط بالعرض {data['par']}" if data.get("par") else ""))
             if _promo_applied:
                 flash("info", "🎁 اتطبّق سعر العرض الشغّال: " + "، ".join(_promo_applied))
             if _qchg:
@@ -479,6 +502,25 @@ st.session_state.campaign_id = st.text_input(
 CAMPAIGN = st.session_state.campaign_id if CAMPAIGN_RE.match(st.session_state.campaign_id) else ""
 if st.session_state.campaign_id and not CAMPAIGN:
     st.caption("⚠️ الشكل المتوقع للكود: OL-YYMMDD-XXXX — مش هيتسجّل بالشكل ده")
+
+CFG = load_config()
+_staff_opts = ["—"] + list(CFG["staff"])
+if CFG["staff"]:
+    _cur = st.session_state.staff_name if st.session_state.staff_name in _staff_opts else "—"
+    _pick_staff = st.selectbox("الموظف", _staff_opts, index=_staff_opts.index(_cur))
+    st.session_state.staff_name = "" if _pick_staff == "—" else _pick_staff
+else:
+    st.session_state.staff_name = st.text_input("اسم الموظف (اختياري)", value=st.session_state.staff_name,
+                                                help="بيظهر في مقارنة الأداء بالداشبورد").strip()
+_ar1, _ar2 = st.columns(2)
+_areas = ["—"] + list(CFG["areas"])
+_cura = st.session_state.area if st.session_state.area in _areas else "—"
+_pick_area = _ar1.selectbox("منطقة العميل", _areas, index=_areas.index(_cura),
+                            help="لحملات زي الزيارة المنزلية المجانية (6 أكتوبر والشيخ زايد)")
+st.session_state.area = "" if _pick_area == "—" else _pick_area
+st.session_state.visit_type = _ar2.radio("نوع الزيارة", ["lab", "home"], horizontal=True,
+                                         index=0 if st.session_state.visit_type != "home" else 1,
+                                         format_func=lambda k: {"lab": "🏥 في المعمل", "home": "🏠 زيارة منزلية"}[k])
 
 name_chk = validate_patient_name(st.session_state.p_name)
 phone_chk = validate_phone(st.session_state.p_phone)
@@ -941,14 +983,103 @@ st.divider()
 # 5) Send / Export
 # ------------------------------------------------------------
 
+def apply_catalog_offer(o):
+    """بيضيف تحاليل العرض للفاتورة (بنفس حماية التكرار/التعارض) ويظبط خصم ثابت
+    يخلّي إجمالي التحاليل دي = سعر العرض بالظبط. لو فيه خصم متسجّل قبل كده مابيلمسوش."""
+    added = dup = 0
+    for name in o["db"]:
+        hits = IDX.get(name)
+        if not hits:
+            continue
+        res = try_add(hits[0], source=f"offer:{o['id']}")
+        added += res == "added"
+        dup += res == "duplicate"
+    wanted = set(o["db"])
+    base = sum(int(i["price"]) for i in st.session_state["items"] if i["name"] in wanted)
+    need = base - int(o["after"])
+    if st.session_state.get("conflict"):
+        flash("warning", "فيه تعارض في إضافة بعض التحاليل — اتحلّه الأول وبعدها اضغط تاني")
+    elif need <= 0:
+        flash("info", f"اتضافت التحاليل ({added} جديد). سعر العرض مش أقل من مجموعها فمفيش خصم يتطبّق")
+    elif float(st.session_state.discount_value or 0) > 0:
+        flash("warning", f"اتضافت التحاليل، بس فيه خصم متسجّل — اضبطه يدوي ({need} ج) "
+                         f"عشان الإجمالي يبقى {int(o['after']):,}")
+    else:
+        st.session_state.discount_type = "Fixed Amount"
+        st.session_state.discount_value = float(need)
+        st.session_state.disc_gen += 1
+        st.session_state["_offer_disc"] = (st.session_state.quote_id, need)
+        st.session_state["_offer_id"] = o["id"]
+        flash("success", f"✅ اتطبّق «{o['title']}»: {added} تحليل جديد + خصم {need:,} "
+                         f"= {int(o['after']):,} {CURRENCY}" + (f" ({dup} كانوا موجودين)" if dup else ""))
+
+
+
+# ---- تسعير الروشتة: عروض مناسبة للفاتورة دي (خصم فوري أو «ضيف تحليل ووفّر»)
+if items and HAS_CATALOG:
+    _sug = [m for m in OM.match_offers(items, IDX, OC.OFFERS) if m["offer"]["id"] != st.session_state.get("_offer_id")][:3]
+    _psug = OM.match_promotions(items, load_promos(), st.session_state.branch, date.today())[:2]
+    if _sug or _psug:
+        st.markdown("#### 🎁 عروض مناسبة لهذه الفاتورة")
+    for _m in _sug:
+        _o = _m["offer"]
+        _c1, _c2 = st.columns([3, 1])
+        if _m["kind"] == "full":
+            _c1.markdown(f"✅ **{_o['title']}** — الفاتورة مؤهلة: {_m['have_sum']:,} ← **{_m['after']:,}** "
+                         f"(**وفّر {_m['saving']:,} {CURRENCY}**)")
+            _lbl = "⚡ طبّق"
+        else:
+            _c1.markdown(f"➕ ضيف **{'، '.join(_m['missing'])}** "
+                         + (f"(+{_m['extra_cost']:,}) " if _m["extra_cost"] > 0 else "(والإجمالي بيقل) ")
+                         + f"واحصل على **{_o['title']}** بـ {_m['after']:,} — قيمة مضافة {_m['saving']:,} {CURRENCY}")
+            _lbl = "➕ أضف وطبّق"
+        if _c2.button(_lbl, key=f"sug_{_o['id']}", use_container_width=True):
+            apply_catalog_offer(_o)
+            st.rerun()
+    for _pm in _psug:
+        _c1, _c2 = st.columns([3, 1])
+        _c1.markdown(f"🎁 عرض شغّال على **{_pm['item']}**: {_pm['promo']['original_price']:,} ← "
+                     f"**{_pm['promo']['promo_price']:,}** (وفّر {_pm['saving']:,} {CURRENCY})")
+        if _c2.button("⚡ طبّق", key=f"psug_{_pm['promo']['id']}", use_container_width=True):
+            for _it in st.session_state["items"]:
+                if _it["name"] == _pm["item"]:
+                    _it["price"] = _pm["promo"]["promo_price"]
+                    _it["source"] = f"promo:{_pm['promo']['id']}"
+            flash("success", f"🎁 اتطبّق سعر العرض على {_pm['item']}")
+            st.rerun()
+
 st.markdown("#### 📤 إرسال")
 
+# ---- حملة الزيارة المنزلية المجانية: صافي التحاليل بعد الخصم >= الحد + منطقة الحملة
+FHV_RES = (CP.evaluate_all(CFG["campaigns"], net_total=totals["total"], area=st.session_state.area,
+                           today=date.today()) if items else [])
+for _r in FHV_RES:
+    _c = _r["campaign"]
+    if _r["eligible"]:
+        st.success(f"🎁 FREE HOME VISIT ELIGIBLE — {_c['name']}"
+                   + (" · أكّد إن العميل في 6 أكتوبر/الشيخ زايد" if _r["needs_area"] else ""))
+    elif _r["reason"] == "amount" and 0 < _r["missing"] <= 0.25 * int(_c["min_net"]):
+        st.info(f"🎁 ناقص {_r['missing']:,} {CURRENCY} ويتأهل العميل لـ «{_c['name']}» "
+                f"(الحد {int(_c['min_net']):,} صافي بعد الخصم)")
+_fhv_on = any(r["eligible"] for r in FHV_RES) and st.toggle(
+    "🎁 إضافة الزيارة المجانية لرسالة العميل", value=True, key="wa_fhv")
+FHV_IDS = CP.benefit_ids(FHV_RES) if _fhv_on else []
+_BINFO = CFG["branches"].get(st.session_state.branch)
+_branch_on = bool(_BINFO) and st.toggle("📍 إرفاق عنوان ومواعيد الفرع مع العرض", value=True, key="wa_branch_info")
+
+
 def _msg(compact: bool) -> str:
-    return build_whatsapp_message(
+    base = build_whatsapp_message(
         items, totals, name_chk.value if name_chk.ok else st.session_state.p_name,
         lab_name=LAB_NAME_AR, doctor=st.session_state.p_doctor,
         invoice_date=st.session_state.p_date.strftime("%d-%m-%Y"),
         currency=CURRENCY, lang=st.session_state.wa_lang, compact=compact)
+    extra = []
+    if FHV_IDS:
+        extra.append(CP.benefit_text(FHV_RES, "en" if st.session_state.wa_lang == "en" else "ar"))
+    if _branch_on:
+        extra.append(config_store.branch_block(_BINFO, compact=compact))
+    return base + ("\n\n" + "\n\n".join(extra) if extra else "")
 
 
 wa_url, wa_msg, wa_note = build_whatsapp_link_safe(
@@ -1002,6 +1133,9 @@ if not blockers:
                     total=totals["total"], count=totals["count"],
                     items=[i["name"] for i in items],
                     campaign_id=CAMPAIGN, phone_key=PK, discount=totals["discount"],
+                    staff=st.session_state.staff_name, visit_type=st.session_state.visit_type,
+                    area=st.session_state.area, benefits=FHV_IDS,
+                    parent=st.session_state.parent_quote,
                     meta=({"approved": True} if _approved and _limit_hit and not _offer_ok else None)
                     or ({"offer": st.session_state["_offer_id"]} if _offer_ok else None)))
             except GithubStoreError:
@@ -1035,7 +1169,10 @@ with s1:
                         "sent", st.session_state.quote_id, branch=st.session_state.branch,
                         total=totals["total"], count=totals["count"],
                         items=[i["name"] for i in items], discount=totals["discount"],
-                        campaign_id=CAMPAIGN, phone_key=PK, contact=_contact))
+                        campaign_id=CAMPAIGN, phone_key=PK, contact=_contact,
+                        staff=st.session_state.staff_name, visit_type=st.session_state.visit_type,
+                        area=st.session_state.area, benefits=FHV_IDS,
+                        parent=st.session_state.parent_quote))
                     st.session_state[_sent_key] = True
                     flash("success", "✅ اتسجّل إن العرض اتبعت — هيظهر في «متابعة النهاردة» لو العميل ماردّش")
                 except GithubStoreError as e:
@@ -1079,7 +1216,8 @@ with s3:
     if st.button("🗑️ فاتورة جديدة", use_container_width=True):
         for k in ("items", "pending", "pending_panel", "conflict", "p_name", "p_phone",
                   "p_doctor", "discount_value", "quote_id", "dismissed_offers",
-                  "saved_link", "saved_at", "referral_source", "campaign_id"):
+                  "saved_link", "saved_at", "referral_source", "campaign_id", "area",
+                  "visit_type", "parent_quote"):
             st.session_state[k] = DEFAULTS[k] if not isinstance(DEFAULTS[k], list) else []
         st.session_state.p_date = date.today()
         st.session_state.disc_gen += 1
@@ -1118,7 +1256,8 @@ with sv1:
             "date_iso": st.session_state.p_date.isoformat(),
             "dtype": st.session_state.discount_type,
             "dval": st.session_state.discount_value,
-            "cid": CAMPAIGN,
+            "cid": CAMPAIGN, "area": st.session_state.area,
+            "vt": st.session_state.visit_type, "par": st.session_state.parent_quote,
         }
         st.session_state.saved_link = f"{APP_URL}/?q={encode_quote(payload, QUOTE_SECRET)}"
         st.session_state.saved_at = payload["ts"]
@@ -1170,9 +1309,14 @@ st.markdown("#### 📞 قرار العميل")
 _dkey = f"_decided_{st.session_state.quote_id}"      # آخر قرار اتسجّل للعرض ده
 _decided = st.session_state.get(_dkey)
 
-oc1, oc2 = st.columns(2)
+oc1, oc2, oc3 = st.columns(3)
+with oc3:
+    if st.button("📅 تم الحجز" + (" ✔" if _decided == "booked" else ""), use_container_width=True,
+                 disabled=not items or _decided in ("booked", "converted")):
+        st.session_state["_show_booking"] = True
+        st.rerun()
 with oc1:
-    if st.button("✅ اتباع / حجز" + (" ✔" if _decided == "converted" else ""),
+    if st.button("✅ حضر / اتباع" + (" ✔" if _decided == "converted" else ""),
                  use_container_width=True,
                  disabled=not items or _decided == "converted"):
         store = get_event_store()
@@ -1193,6 +1337,30 @@ with oc2:
                  use_container_width=True,
                  disabled=not items or _decided == "lost_sale"):
         st.session_state["_show_lost_reason"] = True
+        st.rerun()
+
+if st.session_state.get("_show_booking"):
+    _bd = st.date_input("ميعاد الزيارة", value=date.today() + timedelta(days=1), key="book_date")
+    _bt = st.time_input("الساعة", value=dtime(10, 0), key="book_time")
+    _b1, _b2 = st.columns(2)
+    if _b1.button("سجّل الحجز", use_container_width=True, type="primary", key="book_ok"):
+        _bs = get_event_store()
+        if _bs:
+            try:
+                _bs.append(events_path(month_key()), make_event(
+                    "booked", st.session_state.quote_id, branch=st.session_state.branch,
+                    visit_type=st.session_state.visit_type, area=st.session_state.area,
+                    meta={"appointment": datetime.combine(_bd, _bt).isoformat(timespec="seconds")}))
+                st.session_state[_dkey] = "booked"
+                flash("success", "📅 اتسجّل الحجز — هيظهر في «Visits» لو العميل ماحضرش")
+            except GithubStoreError as e:
+                flash("error", f"مقدرتش أسجّل الحجز: {e}")
+        else:
+            flash("warning", "تتبّع العروض مش متظبط في الإعدادات (secrets)")
+        st.session_state["_show_booking"] = False
+        st.rerun()
+    if _b2.button("إلغاء", use_container_width=True, key="book_cancel"):
+        st.session_state["_show_booking"] = False
         st.rerun()
 
 if st.session_state.get("_show_lost_reason"):
@@ -1256,37 +1424,6 @@ with st.expander("📊 إحصائيات الشهر ده"):
 # 9) 📣 رسائل تسويقية (واتساب)
 #    قوالب جاهزة بتتبني من بيانات الفاتورة الحالية — عدّل النص قبل الإرسال
 # ------------------------------------------------------------
-
-def apply_catalog_offer(o):
-    """بيضيف تحاليل العرض للفاتورة (بنفس حماية التكرار/التعارض) ويظبط خصم ثابت
-    يخلّي إجمالي التحاليل دي = سعر العرض بالظبط. لو فيه خصم متسجّل قبل كده مابيلمسوش."""
-    added = dup = 0
-    for name in o["db"]:
-        hits = IDX.get(name)
-        if not hits:
-            continue
-        res = try_add(hits[0], source=f"offer:{o['id']}")
-        added += res == "added"
-        dup += res == "duplicate"
-    wanted = set(o["db"])
-    base = sum(int(i["price"]) for i in st.session_state["items"] if i["name"] in wanted)
-    need = base - int(o["after"])
-    if st.session_state.get("conflict"):
-        flash("warning", "فيه تعارض في إضافة بعض التحاليل — اتحلّه الأول وبعدها اضغط تاني")
-    elif need <= 0:
-        flash("info", f"اتضافت التحاليل ({added} جديد). سعر العرض مش أقل من مجموعها فمفيش خصم يتطبّق")
-    elif float(st.session_state.discount_value or 0) > 0:
-        flash("warning", f"اتضافت التحاليل، بس فيه خصم متسجّل — اضبطه يدوي ({need} ج) "
-                         f"عشان الإجمالي يبقى {int(o['after']):,}")
-    else:
-        st.session_state.discount_type = "Fixed Amount"
-        st.session_state.discount_value = float(need)
-        st.session_state.disc_gen += 1
-        st.session_state["_offer_disc"] = (st.session_state.quote_id, need)
-        st.session_state["_offer_id"] = o["id"]
-        flash("success", f"✅ اتطبّق «{o['title']}»: {added} تحليل جديد + خصم {need:,} "
-                         f"= {int(o['after']):,} {CURRENCY}" + (f" ({dup} كانوا موجودين)" if dup else ""))
-
 
 if HAS_CATALOG:
     with st.expander("📋 عروض المعمل (بالرقم)"):

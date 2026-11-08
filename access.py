@@ -31,24 +31,62 @@ def check_password(entered: str, expected: str) -> bool:
                                                  expected.encode("utf-8"))
 
 
-def require_access(st, label: str = "الصفحة دي") -> None:
-    """بتوقّف الصفحة (st.stop) لو كلمة السر متظبطة ومتدخلتش. تُستدعى بعد set_page_config."""
-    expected = configured_password(st.secrets)
-    if not expected:
+def staff_password(secrets) -> str:
+    try:
+        return str(secrets.get("staff_password", "") or "")
+    except Exception:
+        return ""
+
+
+def require_access(st, label: str = "الصفحة دي", level: str = "admin") -> None:
+    """
+    بتوقّف الصفحة (st.stop) لو كلمة السر متظبطة ومتدخلتش. تُستدعى بعد set_page_config.
+      level="admin": كلمة سر الإدارة (access_password / dashboard_password)
+      level="staff": كلمة سر الموظفين (staff_password) أو الإدارة — لو staff_password
+                     مش متظبطة، كلمة سر الإدارة بتفتح كل حاجة زي الأول.
+    من غير أي كلمة سر: الصفحة مفتوحة وبيظهر تحذير.
+    """
+    admin_pw, staff_pw = configured_password(st.secrets), staff_password(st.secrets)
+    if not admin_pw and not staff_pw:
         st.warning(f"🔓 {label} مفتوحة لأي حد معاه اللينك — ضيف `access_password` "
                    "في Streamlit Secrets عشان تتحمي.")
         return
-    if st.session_state.get("_access_ok"):
+    admin_ok = bool(st.session_state.get("_access_ok"))
+    staff_ok = bool(st.session_state.get("_staff_ok"))
+    if admin_ok or (level == "staff" and staff_ok):
         return
-    st.markdown("### 🔒 دخول الإدارة")
+    st.markdown("### 🔒 دخول")
     pw = st.text_input("كلمة السر", type="password", key="_access_pw")
     if pw:
-        if check_password(pw, expected):
+        if admin_pw and check_password(pw, admin_pw):
             st.session_state["_access_ok"] = True
             st.rerun()
+        elif level == "staff" and staff_pw and check_password(pw, staff_pw):
+            st.session_state["_staff_ok"] = True
+            st.rerun()
+        elif staff_pw and check_password(pw, staff_pw):
+            st.error("كلمة السر دي للموظفين — الصفحة دي للإدارة")
         else:
             st.error("كلمة السر غلط")
     st.stop()
+
+
+def admin_gate(st, key: str = "_gate_pw", label: str = "🔐 للإدارة") -> bool:
+    """
+    بوابة داخل الصفحة (من غير ما توقّفها): True لو الإدارة مفتوحة. من غير كلمة سر
+    متظبطة بترجّع True (زي بقية البوابات). بتُستخدم لموافقات الخصم وتعديل الإعدادات.
+    """
+    expected = configured_password(st.secrets)
+    if not expected or st.session_state.get("_access_ok"):
+        return True
+    st.caption(label)
+    pw = st.text_input("كلمة سر الإدارة", type="password", key=key)
+    if pw and check_password(pw, expected):
+        st.session_state["_access_ok"] = True
+        st.rerun()
+    elif pw:
+        st.error("كلمة السر غلط")
+    return False
 
 
 def secret_bool(secrets, key: str, default: bool = False) -> bool:
@@ -65,5 +103,12 @@ def secret_bool(secrets, key: str, default: bool = False) -> bool:
 def secret_float(secrets, key: str, default: float = 0.0) -> float:
     try:
         return float(secrets.get(key, default) or default)
+    except Exception:
+        return default
+
+
+def secret_str(secrets, key: str, default: str = "") -> str:
+    try:
+        return str(secrets.get(key, default) or default)
     except Exception:
         return default

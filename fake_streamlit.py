@@ -96,6 +96,9 @@ class FakeSt(types.ModuleType):
     def date_input(self, label, value=None, key=None, **kw):
         return self._input(label, key, value)
 
+    def time_input(self, label, value=None, key=None, **kw):
+        return self._input(label, key, value)
+
     def toggle(self, label, value=False, key=None, **kw):
         return self._input(label, key, value)
 

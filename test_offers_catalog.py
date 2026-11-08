@@ -270,8 +270,13 @@ check("normal customer: menu first, then all non-legacy entries",
 SS = "pages/2_Marketing_Studio.py"
 gh = fs.FakeGitHub()
 gs.requests = gh
-fake, g = fs.run_script(SS, secrets=SEC, state={"ms_cat": "4", "ms_branch": "Diamond"})
-g["fill_from_catalog"]()
+fake, g = fs.run_script(SS, secrets=SEC, state={"ms_bundle_pick": "o:4", "ms_branch": "Diamond"})
+opts = fake.options["ms_bundle_pick"]
+check("studio: ONE box lists bundles (Lipid/Liver/Kidney) and numbered offers",
+      (all(f"b:{n}" in opts for n in ("Lipid Profile", "Liver Profile", "Kidney Profile")),
+       "o:4" in opts, "o:12" in opts, "o:4-v1" in opts), (True, True, False, False))
+check("studio: no separate catalog selector left in the sidebar", "ms_cat" in fake.options, False)
+g["fill_from_pick"]("Diamond")
 st_ = fake.session_state
 check("studio fill from catalog: fields", (st_["ms_title_big"], st_["ms_badge_value"], st_["ms_old_price"], st_["ms_template"]),
       ("أورانج 1", "3750", "4710", "offer"))
