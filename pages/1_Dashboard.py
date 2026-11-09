@@ -20,7 +20,9 @@ from panels import BRANCHES
 from access import require_access
 from price_utils import build_index
 import config_store
-from tracking import crm_kpis, marketing_kpis, month_key, quote_records, summarize_events
+import replies as RP
+from tracking import (crm_kpis, marketing_kpis, month_key, objection_stats, quote_records,
+                      summarize_events)
 
 st.set_page_config(page_title="Orange Lab - Dashboard", page_icon="📊", layout="wide")
 
@@ -286,6 +288,19 @@ if ck["by_staff"]:
         for k, v in sorted(ck["by_staff"].items(), key=lambda x: -x[1]["quotes"])]),
         use_container_width=True, hide_index=True)
     st.caption("الموظف بيتسجّل من خانة «الموظف» في الفاتورة (قايمة الموظفين من إعدادات صفحة Customers).")
+
+st.markdown("##### 💬 تحليل الاعتراضات (من الردود الجاهزة)")
+_obj = objection_stats(events)
+if _obj:
+    st.dataframe(pd.DataFrame([
+        {"الاعتراض": RP.OBJECTION_LABELS.get(k, k), "اتقال كام مرة": v["count"], "عروض مرتبطة": v["quotes"],
+         "حضروا": v["visited"], "فاتوا": v["lost"], "لسه مفتوحة": v["open"], "Visit Rate %": v["visit_rate_pct"],
+         "أكتر سبب فوات": "، ".join(f"{r} ({c})" for r, c in v["top_reasons"]) or "—"}
+        for k, v in sorted(_obj.items(), key=lambda x: -x[1]["count"])]),
+        use_container_width=True, hide_index=True)
+    st.caption("بيتسجّل لما الموظف يضغط «سجّل المحادثة» في صفحة Replies. أسباب الفوات الأعم فوق (❌ أسباب فوات العملاء).")
+else:
+    st.caption("لسه مفيش اعتراضات متسجّلة — استخدم صفحة Replies وسجّل المحادثات.")
 
 with st.expander("🔎 Audit Log — قرارات الخصم الإضافي وتعديلات الإعدادات"):
     _aud = [{"الوقت": r["recovery"]["decision"]["ts"][:16], "النوع": "خصم إضافي",

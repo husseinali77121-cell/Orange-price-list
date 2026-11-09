@@ -516,7 +516,7 @@ with right:
         else:
             s1.link_button("🟢 واتساب للعميل" if _cust_phone else "🟢 واتساب (النص)", wa,
                            use_container_width=True)
-        fb_target = FACEBOOK_PAGE_URL or MAPS_URL
+        fb_target = config_store.resolve_links(load_cfg(), st.secrets)["facebook_page_url"] or FACEBOOK_PAGE_URL or MAPS_URL
         fb = "https://www.facebook.com/sharer/sharer.php?u=" + quote(fb_target, safe="")
         if len(fb) + len(quote(caption, safe="")) < 1900:
             fb += "&quote=" + quote(caption, safe="")
