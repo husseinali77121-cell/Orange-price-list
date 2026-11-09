@@ -19,6 +19,7 @@ NAV_MORE = [
     ("pages/5_Customers.py", "👥", "Customers"),
     ("pages/6_Branches.py", "📍", "Branches"),
     ("pages/7_Gifts.py", "🎀", "Gifts"),
+    ("pages/8_Replies.py", "💬", "Replies"),
 ]
 NAV_PAGES = NAV_MAIN + NAV_MORE
 

@@ -19,7 +19,7 @@ from campaigns import FREE_HOME_VISIT_SEED
 from tracking import DEFAULT_VIP_RULES
 
 CONFIG_PATH = "config/app_config.json"
-SECTIONS = ("branches", "campaigns", "vip", "gifts", "staff", "areas")
+SECTIONS = ("branches", "campaigns", "vip", "gifts", "staff", "areas", "links")
 
 DEFAULT_AREAS = ["6 October", "Sheikh Zayed", "Other"]
 DEFAULT_GIFTS = [{"id": "welcome_gift", "name": "Welcome Gift", "cost": 0}]
@@ -37,7 +37,8 @@ def default_config() -> dict:
         }
     return {"branches": branches, "campaigns": [copy.deepcopy(FREE_HOME_VISIT_SEED)],
             "vip": dict(DEFAULT_VIP_RULES), "gifts": copy.deepcopy(DEFAULT_GIFTS),
-            "staff": [], "areas": list(DEFAULT_AREAS)}
+            "staff": [], "areas": list(DEFAULT_AREAS),
+            "links": {"app_url": "", "review_url": "", "facebook_page_url": ""}}
 
 
 def effective(stored) -> dict:
@@ -53,7 +54,29 @@ def effective(stored) -> dict:
             cfg[sec] = stored[sec]
     if isinstance(stored.get("vip"), dict):
         cfg["vip"].update(stored["vip"])
+    if isinstance(stored.get("links"), dict):
+        cfg["links"].update({k: str(v or "").strip() for k, v in stored["links"].items()})
     return cfg
+
+
+def resolve_links(cfg: dict, secrets=None) -> dict:
+    """
+    لينكات التطبيق والتسويق: المتخزّن في الإعدادات الأول، وبعده Secrets (app_url / review_url /
+    facebook_page_url)، وبعده فاضي. app_url بدون «/» في الآخر.
+    """
+    def sec(key):
+        try:
+            return str((secrets or {}).get(key, "") or "").strip()
+        except Exception:
+            return ""
+    links = cfg.get("links", {})
+    out = {k: (links.get(k) or sec(k)) for k in ("app_url", "review_url", "facebook_page_url")}
+    out["app_url"] = out["app_url"].rstrip("/")
+    return out
+
+
+def valid_url(u: str) -> bool:
+    return bool(re.match(r"^https://[^\s]+\.[^\s]+", (u or "").strip()))
 
 
 def load(store) -> dict:

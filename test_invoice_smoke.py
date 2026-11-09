@@ -284,7 +284,7 @@ import share_widget
 
 fake, g, gh = invoice()
 links = [c[1][0] for c in fake.calls if c[0] == "page_link"]
-check("invoice shows links to the 7 other pages (not itself)",
+check("invoice shows links to the 8 other pages (not itself)",
       sorted(links), sorted(p for p, _i, _l in navigation.NAV_PAGES if p != "Invoice.py"))
 src = open("Invoice.py", encoding="utf-8").read()
 check("invoice no longer hides the whole header (holds the pages toggle)",
@@ -295,12 +295,12 @@ for path, name in [("pages/1_Dashboard.py", "1_Dashboard"), ("pages/3_Follow_Up.
     f_, g_, gh_ = page(path)
     ln = [c[1][0] for c in f_.calls if c[0] == "page_link"]
     check(f"{name}: nav present, excludes itself, links back to invoice",
-          (path not in ln, "Invoice.py" in ln, len(ln)), (True, True, 7))
+          (path not in ln, "Invoice.py" in ln, len(ln)), (True, True, 8))
 
 check("no stray files in pages/ (every page starts with a number)",
       [f for f in os.listdir("pages") if f.endswith(".py") and not f[0].isdigit()], [])
 check("nav labels are English (as requested)", [l for _p, _i, l in navigation.NAV_PAGES],
-      ["Invoice", "Studio", "Dashboard", "Follow-up", "Offers", "Customers", "Branches", "Gifts"])
+      ["Invoice", "Studio", "Dashboard", "Follow-up", "Offers", "Customers", "Branches", "Gifts", "Replies"])
 check("nav labels contain no Arabic letters", any("\u0600" <= ch <= "\u06FF" for _p, _i, l in navigation.NAV_PAGES for ch in l), False)
 check("nav buttons are boxed (border + background in CSS)", all(
     k in navigation.NAV_CSS for k in ("border:2px solid", "border-radius", "background:#FFF3EA")), True)
@@ -317,7 +317,7 @@ class Flaky(fs.FakeSt):
 
 
 fk = Flaky()
-check("nav survives a missing page (no crash, others shown)", navigation.render_nav(fk, ""), 7)
+check("nav survives a missing page (no crash, others shown)", navigation.render_nav(fk, ""), 8)
 
 
 class OldStreamlit(fs.FakeSt):
@@ -327,7 +327,7 @@ class OldStreamlit(fs.FakeSt):
         self.calls.append(("page_link_ok", path))
 
 
-check("nav falls back for old Streamlit (no use_container_width)", navigation.render_nav(OldStreamlit(), ""), 8)
+check("nav falls back for old Streamlit (no use_container_width)", navigation.render_nav(OldStreamlit(), ""), 9)
 
 # صورة عروض الباقات داخل الفاتورة
 fake, g, gh = invoice()

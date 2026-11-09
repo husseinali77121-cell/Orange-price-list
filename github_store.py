@@ -105,6 +105,22 @@ class GithubEventStore:
         raise GithubStoreError(f"append فشلت بعد {max_retries} محاولات: {last_err}")
 
 
+    def repo_info(self) -> dict:
+        """
+        فحص الريبو من غير ما نكتب فيه: {ok, private, default_branch, error}.
+        بنستخدمه في «Setup check» عشان نتأكد إن ريبو الأحداث Private.
+        """
+        try:
+            r = requests.get(f"{API_ROOT}/repos/{self.repo}", headers=self._headers(), timeout=TIMEOUT)
+        except requests.RequestException as e:
+            return {"ok": False, "private": None, "default_branch": "", "error": str(e)}
+        if r.status_code != 200:
+            return {"ok": False, "private": None, "default_branch": "",
+                    "error": f"GitHub ({r.status_code}) — راجع اسم الريبو وصلاحيات الـ Token"}
+        j = r.json()
+        return {"ok": True, "private": bool(j.get("private")), "default_branch": j.get("default_branch", ""),
+                "error": ""}
+
     def update(self, path: str, fn, message: str = "update", max_retries: int = 3):
         """
         read -> fn(data) -> write بنفس الـ sha (CAS). بيرجّع البيانات الجديدة.

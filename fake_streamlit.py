@@ -230,7 +230,12 @@ class FakeGitHub:
     def _path(url):
         return url.split("/contents/")[1]
 
+    repo_private = True
+    repo_status = 200
+
     def get(self, url, headers=None, params=None, timeout=None):
+        if "/contents/" not in url:                     # GET /repos/{owner}/{repo}
+            return FakeResp(self.repo_status, {"private": self.repo_private, "default_branch": "main"})
         f = self.files.get(self._path(url))
         if f is None:
             return FakeResp(404)

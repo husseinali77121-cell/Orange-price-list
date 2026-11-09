@@ -504,6 +504,9 @@ if st.session_state.campaign_id and not CAMPAIGN:
     st.caption("⚠️ الشكل المتوقع للكود: OL-YYMMDD-XXXX — مش هيتسجّل بالشكل ده")
 
 CFG = load_config()
+LINKS = config_store.resolve_links(CFG, st.secrets)       # لينكات قابلة للتعديل من صفحة Branches ← Links
+APP_URL = LINKS["app_url"] or APP_URL
+REVIEW_URL = LINKS["review_url"] or REVIEW_URL
 _staff_opts = ["—"] + list(CFG["staff"])
 if CFG["staff"]:
     _cur = st.session_state.staff_name if st.session_state.staff_name in _staff_opts else "—"
@@ -1271,7 +1274,7 @@ if st.session_state.saved_link:
         st.text_input(f"لينك العرض — صالح {QUOTE_TTL_HOURS:.0f} ساعة (شير له، افتحه تاني يرجّع نفس الفاتورة)",
                       value=st.session_state.saved_link, key="saved_link_box")
     if APP_URL.startswith("https://REPLACE"):
-        st.warning("⚠️ لسه محطوطش لينك التطبيق الحقيقي في `APP_URL` أعلى الملف — "
+        st.warning("⚠️ لسه محطوطش لينك التطبيق الحقيقي — حطه من صفحة Branches ← Links (أو secret اسمه app_url) — "
                    "غيّره عشان اللينك ده يفتح صح")
 
     if phone_chk.ok and CUSTOMER and CUSTOMER["optout"]:

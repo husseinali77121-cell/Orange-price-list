@@ -13,6 +13,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import re
+
+import tzsetup  # noqa: F401  (توقيت القاهرة لكل البرنامج)
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
@@ -36,6 +38,8 @@ LOST_SALE_REASONS = [
     "عدد التحاليل كتير",
     "هيفكر ويرد",
     "معمل تاني",
+    "مش بيرد",
+    "تأجيل لوقت تاني",
     "مستني الدكتور",
     "مفيش وقت",
     "سبب تاني",
@@ -44,7 +48,7 @@ LOST_SALE_REASONS = [
 
 EVENT_TYPES = ("quote", "lost_sale", "converted", "campaign", "sent", "followup", "optout",
                "booked", "visited", "recovery_request", "recovery_decision", "gift",
-               "vip_set", "vip_contact", "config_change")
+               "vip_set", "vip_contact", "config_change", "reply")
 
 
 # ------------------------------------------------------------
@@ -72,6 +76,7 @@ def make_event(event_type: str, quote_id: str, branch: str = "",
     (meta: decision approved|rejected|counter, amount, approver, reason). gift: هدية
     عميل جديد (meta: gift_type, cost, delivered_by, note). vip_set / vip_contact: بصمة
     العميل (meta.vip / meta.result). config_change: سجل تعديلات إعدادات الإدارة.
+    reply: الموظف استخدم رد جاهز (meta: objection, kind, reply, version) — أساس تحليل الاعتراضات.
     phone_key: بصمة HMAC للموبايل (phone_key()) — بتخلّينا نعرف عميل متكرر/موقوف
                من غير ما نخزّن الرقم نفسه. contact: اسم+رقم — بيتخزّن بس لو
                secrets: store_contacts = true (ولازم الريبو يكون Private).
@@ -706,3 +711,60 @@ def crm_kpis(events: List[dict], fhv_ids=(), vip: Optional[dict] = None,
         "vip_customers": sum(1 for c in customers(events, vip, now) if c["label"] == "VIP"),
         "gifts_delivered": gs["count"], "gifts_cost": gs["cost"], "by_staff": by_staff,
     }
+
+
+# ------------------------------------------------------------
+# متابعة بعد «هفكر وأرد» — من غير تكرار، وتحليل الاعتراضات
+# ------------------------------------------------------------
+
+def can_schedule_followup(rec: dict, now: Optional[datetime] = None, *, opted: Optional[set] = None,
+                          min_gap_hours: float = 12, max_attempts: int = 3) -> Tuple[bool, str]:
+    """
+    هل نسجّل متابعة جديدة لعرض؟ بيمنع التكرار: العرض اتقفل، العميل موقوف، خلّصت المحاولات،
+    فيه متابعة مجدولة لسه، أو اتعملت متابعة من أقل من min_gap_hours. بيرجّع (مسموح، السبب).
+    """
+    now = now or datetime.now()
+    if stage_of(rec) in ("visited", "lost"):
+        return False, "العرض اتقفل (العميل حضر أو فات)"
+    if rec["optout"] or (rec["pk"] and opted and rec["pk"] in opted):
+        return False, "العميل طلب إيقاف الرسائل"
+    if len(rec["followups"]) >= max_attempts:
+        return False, f"خلّصت محاولات المتابعة ({max_attempts})"
+    nd = _parse_ts(rec["next_due"]) if rec["next_due"] else None
+    if nd and nd > now:
+        return False, f"فيه متابعة مجدولة بالفعل ({nd:%d-%m %H:%M})"
+    last = _parse_ts(max(rec["followups"])) if rec["followups"] else None
+    if last and now - last < timedelta(hours=min_gap_hours):
+        return False, f"اتعملت متابعة من أقل من {int(min_gap_hours)} ساعة"
+    return True, ""
+
+
+def objection_stats(events: List[dict]) -> Dict[str, dict]:
+    """
+    الاعتراضات اللي اتسجّلت بالردود الجاهزة (reply بـ meta.kind = objection)، ومصير العروض اللي حصل
+    عليها الاعتراض: حضرت / فاتت / لسه مفتوحة، وأكتر أسباب الفوات ليها.
+      {objection: {count, quotes, visited, lost, open, visit_rate_pct, top_reasons}}
+    """
+    recs = quote_records(events)
+    raw: Dict[str, dict] = {}
+    for e in events:
+        m = e.get("meta") or {}
+        if e.get("type") != "reply" or m.get("kind") != "objection" or not m.get("objection"):
+            continue
+        s = raw.setdefault(m["objection"], {"count": 0, "quotes": set()})
+        s["count"] += 1
+        if e.get("quote_id") in recs:
+            s["quotes"].add(e["quote_id"])
+    out: Dict[str, dict] = {}
+    for k, s in raw.items():
+        rs = [recs[q] for q in s["quotes"]]
+        visited = sum(1 for r in rs if stage_of(r) == "visited")
+        lost = [r for r in rs if stage_of(r) == "lost"]
+        reasons: Dict[str, int] = {}
+        for r in lost:
+            if r["lost_reason"]:
+                reasons[r["lost_reason"]] = reasons.get(r["lost_reason"], 0) + 1
+        out[k] = {"count": s["count"], "quotes": len(rs), "visited": visited, "lost": len(lost),
+                  "open": len(rs) - visited - len(lost), "visit_rate_pct": _pct(visited, len(rs)),
+                  "top_reasons": sorted(reasons.items(), key=lambda x: -x[1])[:3]}
+    return out
