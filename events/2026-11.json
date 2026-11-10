@@ -127,5 +127,19 @@
   ],
   "pk": "54e39a9cca8ed82a",
   "visit_type": "lab"
+ },
+ {
+  "type": "quote",
+  "quote_id": "OR-261111-8309",
+  "branch": "Orange (La Cité)",
+  "ts": "2026-11-11T00:46:30",
+  "referral_source": "غير محدد",
+  "total": 400,
+  "count": 1,
+  "items": [
+   "CBC"
+  ],
+  "pk": "19551cc08c7f723e",
+  "visit_type": "lab"
  }
 ]
