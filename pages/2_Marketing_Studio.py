@@ -36,9 +36,10 @@ from navigation import render_nav
 from panels import BRANCHES, DEFAULT_BRANCH
 from share_widget import share_button_html
 from price_utils import (MAX_WA_URL, build_index, bundle_saving, format_phone_display,
-                         resolve_test, validate_phone)
+                         resolve_test, validate_patient_name, validate_phone)
 from promotions import PROMO_PATH, active_promotions
 from tracking import customer_profile, make_event, month_key, phone_key
+from wa_bridge import BRIDGE_ARIA, BRIDGE_CSS, make_token, parse_token, send_button_html
 
 st.set_page_config(page_title="Orange Lab - Marketing Studio", page_icon="🎨",
                    layout="wide")
@@ -265,6 +266,33 @@ st.markdown("## 🎨 Marketing Studio")
 render_nav(st, "pages/2_Marketing_Studio.py")
 st.caption("اكتب العرض → اختار القالب → حمّل الصورة أو شاركها. الأسعار بتتسحب من الباقات.")
 
+# ------------------------------------------------------------
+# 👤 العميل — زي صفحة التسعير: الاسم والرقم فوق، والرسالة بتتبعت مباشرة على واتساب العميل باسمه
+# ------------------------------------------------------------
+st.markdown("#### 👤 العميل (للإرسال المباشر على الواتساب)")
+_cc1, _cc2 = st.columns(2)
+_cc1.text_input("اسم العميل", key="ms_cust_name", placeholder="Ahmed Ali — بيتكتب في أول الرسالة")
+_cc2.text_input("رقم موبايل العميل", key="ms_cust_phone", placeholder="01012345678",
+                help="واتساب هيفتح على الرقم ده مباشرة")
+_nm = validate_patient_name(st.session_state["ms_cust_name"]) if st.session_state["ms_cust_name"].strip() else None
+_cp = validate_phone(st.session_state["ms_cust_phone"]) if st.session_state["ms_cust_phone"].strip() else None
+_v1, _v2 = st.columns(2)
+if _nm is None:
+    _v1.caption("اختياري — الرسالة بتبدأ بـ «أهلاً <الاسم>»")
+elif _nm.ok:
+    _v1.markdown(f"<span style='color:#0a7d33;font-weight:600'>✅ {_nm.value}</span>", unsafe_allow_html=True)
+else:
+    _v1.markdown(f"<span style='color:#c62828;font-weight:600'>❌ {' · '.join(_nm.errors)}</span>",
+                 unsafe_allow_html=True)
+if _cp is None:
+    _v2.caption("من غير رقم: واتساب هيسيبك تختار جهة الاتصال")
+elif _cp.ok:
+    _v2.markdown(f"<span style='color:#0a7d33;font-weight:600'>✅ {format_phone_display(_cp.value)}</span>",
+                 unsafe_allow_html=True)
+else:
+    _v2.markdown(f"<span style='color:#c62828;font-weight:600'>❌ {' · '.join(_cp.errors)}</span>",
+                 unsafe_allow_html=True)
+
 with st.sidebar:
     st.markdown("### 🎨 الاستوديو")
     st.selectbox("📂 ابدأ من مثال", list(PRESET_LABELS), key="ms_preset",
@@ -279,13 +307,6 @@ with st.sidebar:
              format_func=lambda k: (_cfg["branches"].get(k) or {}).get("name_ar", k))
     st.text_input("رقم التواصل على الصورة", key="ms_phone",
                   help="بيتغيّر لرقم الفرع لما تبدّل الفرع، وتقدر تعدّله بإيدك")
-    st.markdown("##### 👤 العميل (للرسالة)")
-    st.text_input("اسم العميل", key="ms_cust_name", placeholder="اختياري — بيتكتب في الرسالة")
-    st.text_input("رقم موبايل العميل", key="ms_cust_phone", placeholder="01012345678",
-                  help="واتساب هيفتح على الرقم ده مباشرة")
-    _cp = validate_phone(st.session_state["ms_cust_phone"]) if st.session_state["ms_cust_phone"].strip() else None
-    if _cp is not None:
-        st.caption(f"✅ {format_phone_display(_cp.value)}" if _cp.ok else "⚠️ الرقم مش صالح — واتساب هيسيبك تختار جهة الاتصال")
     st.divider()
     fs_ = font_status()
     st.caption(f"🔤 الخط: {fs_['bold']} · التشكيل: {'✅ raqm' if fs_['mode'] == 'raqm' else '⚠️ بديل'}")
@@ -478,7 +499,7 @@ with right:
     add_disc = st.toggle("إضافة تنويه طبي في النص", value=(kind != "offer"), key="ms_disc")
     add_branch = st.toggle("إضافة عنوان ومواعيد الفرع", value=True, key="ms_branch_info")
     _binfo = load_cfg()["branches"].get(st.session_state["ms_branch"])
-    _first = (st.session_state["ms_cust_name"].strip().split() or [""])[0]
+    _first = ((_nm.value if (_nm and _nm.ok) else st.session_state["ms_cust_name"]).strip().split() or [""])[0]
     _greeting = f"أهلاً {_first} 🍊" if _first else ""
     _branch_text = (config_store.branch_block({**_binfo, "phone": fields.get("phone") or _binfo.get("phone", "")})
                     if (add_branch and _binfo) else "")
@@ -504,7 +525,28 @@ with right:
     _optout = bool(_prof and _prof["optout"])
     if _optout:
         st.warning("🚫 العميل ده طلب إيقاف الرسائل التسويقية — الإرسال متقفل ليه.")
+    elif _prof and _prof["label"] != "New":
+        st.caption(f"👤 عميل {_prof['label']} — {_prof['quotes']} عرض قبل كده، حضر {_prof['converted']} مرة")
     wa = share_url(caption, _cust_phone)
+    _pk = phone_key(_cust_phone, _secret) if (_cust_phone and _secret) else ""
+
+    def log_touch(via: str):
+        """الإعلان اتبعت لعميل بعينه ← لو حجز خلال 14 يوم، الفاتورة بتربط العرض بالحملة لوحدها."""
+        key = (cid, "wa", _pk or _cust_phone)
+        if key in st.session_state["ms_logged"]:
+            return
+        store = store_from_secrets(st.secrets)
+        if not store:
+            return
+        try:
+            store.append(events_path(month_key()), make_event(
+                "campaign", quote_id=cid, branch=st.session_state["ms_branch"], note=title_for_log,
+                phone_key=_pk, meta={"template": kind, "size": size, "format": "wa_direct",
+                                     "to_customer": True, "via": via, "badge": fields.get("badge_mode", "")}))
+            st.session_state["ms_logged"].add(key)
+        except GithubStoreError:
+            pass
+
     if not _optout:
         s1, s2 = st.columns(2)
         if len(wa) > MAX_WA_URL:                 # رسالة طويلة (مع بيانات الفرع) — نسخ ولصق
@@ -513,9 +555,26 @@ with right:
             s1.link_button("🟢 افتح محادثة واتساب (والصق النص)",
                            f"https://wa.me/{_cust_phone}" if _cust_phone else "https://wa.me/",
                            use_container_width=True)
+        elif _cust_phone:
+            # ضغطة واحدة: واتساب العميل باسمه + تسجيل إن الإعلان وصله (لربط الحجز بالحملة)
+            st.session_state.setdefault("ms_bridge_gen", 0)
+            st.markdown(BRIDGE_CSS, unsafe_allow_html=True)
+            _bv = st.text_input(BRIDGE_ARIA, key=f"ms_bridge_{st.session_state['ms_bridge_gen']}",
+                                label_visibility="collapsed")
+            _tok = parse_token(_bv)
+            if _tok:
+                st.session_state["ms_bridge_gen"] += 1
+                if _tok == ("camp", cid):
+                    log_touch("one_tap")
+                st.rerun()
+            _who = _first or f"\u2066{format_phone_display(_cust_phone)}\u2069"
+            with s1:
+                components.html(send_button_html(
+                    wa, f"📲 إرسال لـ {_who}", make_token("camp", cid),
+                    ok_text="✔ اتفتح واتساب — اتسجّل إن الإعلان وصل للعميل",
+                    fail_text="اتفتح واتساب العميل"), height=82)
         else:
-            s1.link_button("🟢 واتساب للعميل" if _cust_phone else "🟢 واتساب (النص)", wa,
-                           use_container_width=True)
+            s1.link_button("🟢 واتساب (النص)", wa, use_container_width=True)
         fb_target = config_store.resolve_links(load_cfg(), st.secrets)["facebook_page_url"] or FACEBOOK_PAGE_URL or MAPS_URL
         fb = "https://www.facebook.com/sharer/sharer.php?u=" + quote(fb_target, safe="")
         if len(fb) + len(quote(caption, safe="")) < 1900:

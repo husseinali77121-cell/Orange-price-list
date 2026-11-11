@@ -25,6 +25,9 @@ from marketing import build_followup_message, share_url
 from navigation import render_nav
 from price_utils import build_index, build_whatsapp_url
 from recovery import recovery_link
+import config_store
+import replies as RP
+from patient_prep import prep_block
 from tracking import (LOST_SALE_REASONS, followup_queue, make_event, month_key,
                       optout_keys, quote_records, recovery_queue, stage_of)
 
@@ -48,6 +51,16 @@ def load_index():
 
 
 IDX = load_index()
+BUNDLE_COMPONENTS = {b["name"]: list(b.get("components", [])) for b in BUNDLE_DEFS}
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def load_cfg():
+    return config_store.load(store_from_secrets(st.secrets))
+
+
+CFG = load_cfg()
+BRANCH_NAMES = [(v or {}).get("name_ar", k) for k, v in CFG["branches"].items()]
 
 
 def _prev_month(d: datetime) -> str:
@@ -109,7 +122,10 @@ def _appt(key: str):
 
 def _head(r, icon):
     c = r.get("contact") or {}
-    t = f"{icon} {r['quote_id']} · {r['total']:,} ج · {r['branch'] or '—'}"
+    if r.get("is_lead") and not r.get("quote_ts"):
+        t = f"{icon} 🟡 مستفسر (من غير عرض) · {r['branch'] or '—'}"
+    else:
+        t = f"{icon} {r['quote_id']} · {r['total']:,} ج · {r['branch'] or '—'}"
     return t + (f" · {c['name']}" if c.get("name") else "")
 
 
@@ -127,8 +143,11 @@ def card(r: dict, due: bool):
                    + (f" · {r['staff']}" if r["staff"] else "") + f" · ميعادها: {r['due_at']:%d-%m %H:%M}")
         if r["items"]:
             st.write("🧪 " + "، ".join(r["items"]))
+        lead = bool(r.get("is_lead") and not r.get("quote_ts"))
         msg = build_followup_message(lab=LAB_NAME_AR, name=(c.get("name") or "").split(" ")[0],
-                                     items=r["items"], total=r["total"], attempt=r["attempts"])
+                                     items=r["items"], total=r["total"], attempt=r["attempts"], lead=lead,
+                                     cta="" if lead else RP.booking_cta(BRANCH_NAMES),
+                                     code="" if lead else RP.code_line(qid))
         msg = st.text_area("نص الرسالة", msg, key=f"m_{qid}", height=120)
         phone = (c.get("phone") or "").strip()
         st.link_button("📲 افتح واتساب" if phone else "📲 واتساب (اختار جهة الاتصال)",
@@ -145,6 +164,12 @@ def card(r: dict, due: bool):
         if a3.button("🚫 مايتبعتلوش تاني", key=f"oo_{qid}", use_container_width=True):
             if log(make_event("optout", qid, branch=r["branch"], phone_key=r.get("pk", ""))):
                 st.rerun()
+        if lead:
+            st.caption("🟡 لو بعت الروشتة/التحاليل اعمله عرض سعر من Invoice بنفس الرقم — المستفسر بيتقفل لوحده.")
+            reason, clicked = _lost_buttons(r, "ls", "rs")
+            if clicked and log(make_event("lost_sale", qid, branch=r["branch"], reason=reason, staff=STAFF)):
+                st.rerun()
+            return
         st.markdown("**📅 العميل وافق وحجز؟**")
         appt = _appt(f"bk_{qid}")
         if st.button("📅 Booked", key=f"bk_{qid}", use_container_width=True):
@@ -163,11 +188,24 @@ def card(r: dict, due: bool):
 
 def visit_card(r: dict, check: bool):
     qid = r["quote_id"]
+    c = r.get("contact") or {}
     with st.expander(_head(r, "📅"), expanded=check and len(q["visit_check"]) <= 3):
         st.caption(f"ميعاد الزيارة: {r['appointment'] or '—'} · {'🏠 زيارة منزلية' if r['visit_type'] == 'home' else '🏥 المعمل'}"
                    + (f" · {r['area']}" if r["area"] else ""))
         if r["items"]:
             st.write("🧪 " + "، ".join(r["items"]))
+        # رسالة جاهزة: تذكير قبل الميعاد (بالتحضير) — أو «افتقدناك» لو الميعاد عدّى
+        binfo = CFG["branches"].get(r["branch"])
+        tpl = RP.get("missed_appt" if check else "appt_reminder")
+        rmsg = RP.render_reply(tpl, "short", name=c.get("name", ""), lab=LAB_NAME_AR,
+                               appt_text="" if check else RP.appt_line(r["appointment"]),
+                               prep_text="" if check else prep_block(r["items"], BUNDLE_COMPONENTS),
+                               branch_text=config_store.branch_block(binfo, compact=True) if (binfo and not check) else "")
+        rmsg = st.text_area("رسالة " + ("«افتقدناك»" if check else "التذكير"), rmsg, key=f"vm_{qid}", height=110)
+        phone = (c.get("phone") or "").strip()
+        st.link_button(("📲 ابعت «افتقدناك» — نحجز ميعاد تاني" if check else "📲 ابعت تذكير بالميعاد")
+                       + ("" if phone else " (اختار جهة الاتصال)"),
+                       build_whatsapp_url(phone, rmsg) if phone else share_url(rmsg), use_container_width=True)
         if check:
             v1, v2 = st.columns(2)
             if v1.button("✅ Visited — حضر", key=f"vv_{qid}", use_container_width=True, type="primary"):

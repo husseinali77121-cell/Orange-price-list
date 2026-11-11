@@ -19,6 +19,9 @@ from navigation import render_nav
 from price_utils import build_whatsapp_url
 from tracking import (CUSTOMER_LABELS, customers, make_event, month_key,
                       quote_records, stage_of, vip_followups)
+from brand import LAB_NAME_AR
+from marketing import share_url
+from recall import RECALL_RULES, recall_due, recall_message
 
 st.set_page_config(page_title="Orange Lab - Customers", page_icon="👥", layout="wide")
 st.markdown("## 👥 Customers CRM")
@@ -77,7 +80,8 @@ def log(ev):
         return False
 
 
-tab_c, tab_vip, tab_q, tab_set = st.tabs(["👥 Customers", "⭐ Monthly VIP Follow-Up", "🧾 Quotations", "⚙️ Settings"])
+tab_c, tab_vip, tab_rc, tab_q, tab_set = st.tabs(["👥 Customers", "⭐ Monthly VIP Follow-Up", "🔁 Recall",
+                                                   "🧾 Quotations", "⚙️ Settings"])
 
 with tab_c:
     counts = {k: sum(1 for c in custs if c["label"] == k) for k in CUSTOMER_LABELS}
@@ -151,6 +155,38 @@ with tab_vip:
             st.caption("اتحسبوا VIP بس الاسم/الرقم مش متخزّن (store_contacts كان مقفول وقت الإرسال).")
             for c in vf["no_contact"]:
                 st.write(f"• {c['pk']} — {c['spend']:,} ج · {c['visits']} زيارة")
+
+with tab_rc:
+    st.markdown("### 🔁 تذكير التحاليل الدورية")
+    st.caption("عملاء حضروا وعملوا تحليل بيتعاد دورياً (سكر تراكمي، فيتامين د، دهون، غدة…) وميعاده قرّب أو عدّى — "
+               "ومارجعوش عملوه. الرسالة بتقول «لو الدكتور طالب متابعة دورية» ومابتقولش للعميل يعمل تحليل. "
+               "الفترات من recall.py (راجعها طبياً).")
+    rc = recall_due(events, now=now)
+    st.caption(" · ".join(f"{r['label']}: كل {r['days']} يوم" for r in RECALL_RULES))
+    m1, m2 = st.columns(2)
+    m1.metric("مستحقين تذكير", len(rc))
+    m2.metric("عندهم رقم متخزّن", sum(1 for x in rc if (x["contact"] or {}).get("phone")))
+    if not rc:
+        st.success("مفيش تذكيرات مستحقة دلوقتي 👌")
+    for x in rc:
+        c = x["contact"] or {}
+        months = max(1, round(x["days"] / 30))
+        with st.expander(f"🔁 {c.get('name') or x['pk']} — {x['label']} · آخر زيارة {x['last_visit'][:10]}"
+                         + (f" · متأخر {x['overdue_days']} يوم" if x["overdue_days"] else " · قرّب")):
+            binfo = cfg["branches"].get(x["branch"])
+            msg = recall_message(lab=LAB_NAME_AR, name=c.get("name", ""), label=x["label"], months=months,
+                                 branch_text=config_store.branch_block(binfo, compact=True) if binfo else "")
+            msg = st.text_area("الرسالة", msg, key=f"rcm_{x['pk']}_{x['rule']}", height=150)
+            if c.get("phone"):
+                st.link_button("📲 واتساب", build_whatsapp_url(c["phone"], msg), use_container_width=True)
+            else:
+                st.link_button("📲 واتساب (اختار جهة الاتصال — الرقم مش متخزّن)", share_url(msg), use_container_width=True)
+            res = st.selectbox("النتيجة", ["اتبعت", "حجز", "مش محتاج دلوقتي", "مفيش رد"], key=f"rcr_{x['pk']}_{x['rule']}")
+            if st.button("✅ سجّل التذكير (مايتكررش 30 يوم)", key=f"rcl_{x['pk']}_{x['rule']}",
+                         type="primary", use_container_width=True):
+                if log(make_event("recall_contact", x["quote_id"], branch=x["branch"], phone_key=x["pk"],
+                                  staff=STAFF.strip(), meta={"rule": x["rule"], "result": res})):
+                    st.rerun()
 
 with tab_q:
     recs = [r for r in quote_records(events).values() if r["quote_ts"]]

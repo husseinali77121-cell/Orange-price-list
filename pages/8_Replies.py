@@ -5,6 +5,9 @@
 #  • الإرسال بإيد الموظف (البرنامج ما بيبعتش تلقائي) وتأكيد الإرسال يدوي.
 #  • المتابعة بتتمنع لو فيه متابعة مجدولة أو اتعملت من أقل من 12 ساعة (ما نزعجش العميل).
 #  • كل رد بيتسجّل (reply) → تحليل الاعتراضات في الداشبورد.
+#  • جديد: الصق رسالة العميل ← البرنامج يفهم هو بيسأل عن إيه ويقترح الرد (غالي؟ صيام؟ عنوان؟…)،
+#    والرد بيتملا من العرض المسجّل (التحاليل + الإجمالي + الكود + التحضير + ميعاد النتيجة/الحجز).
+#  • عميل سأل ومفيش عرض لسه ← «متابعة» بتسجّله مستفسر (Lead) عشان مايضيعش.
 # ============================================================
 
 from datetime import datetime, timedelta
@@ -27,8 +30,12 @@ from panels import BRANCHES, DEFAULT_BRANCH
 from price_utils import (MAX_WA_URL, build_index, format_phone_display, validate_phone)
 from promotions import PROMO_PATH, active_promotions
 from marketing import share_url
-from tracking import (customer_profile, can_schedule_followup, make_event, month_key, optout_keys,
-                      phone_key, quote_records, stage_of)
+from tracking import (WHATSAPP_SOURCE, customer_profile, can_schedule_followup, make_event, month_key,
+                      new_lead_id, optout_keys, phone_key, quote_records, stage_of)
+import wa_inquiry as WI
+from patient_prep import eta_text, prep_block
+from price_utils import resolve_test
+from access import secret_bool
 
 st.set_page_config(page_title="Orange Lab - Replies", page_icon="💬", layout="wide")
 st.markdown("## 💬 Smart Replies")
@@ -69,12 +76,58 @@ def load_events():
         return []
 
 
+@st.cache_resource(show_spinner=False)
+def load_index():
+    return build_index(LABS_DB, BUNDLE_DEFS, BUNDLE_CATEGORY)
+
+
+IDX = load_index()
+BUNDLE_COMPONENTS = {b["name"]: list(b.get("components", [])) for b in BUNDLE_DEFS}
+STORE_CONTACTS = secret_bool(st.secrets, "store_contacts")
 CFG = load_cfg()
 events = load_events()
 recs = quote_records(events)
 opted = optout_keys(events)
 st.session_state.setdefault("staff_name", "")
 st.session_state.setdefault("rp_branch", DEFAULT_BRANCH)
+
+# جاي من الفاتورة («افتح في Replies»): الاسم/الرقم/الرد/رسالة العميل
+_pf = st.session_state.pop("_rp_prefill", None)
+if isinstance(_pf, dict):
+    for _k, _v in _pf.items():
+        if _k in ("rp_name", "rp_phone", "rp_reply", "rp_msg") and _v is not None:
+            st.session_state[_k] = _v
+    st.session_state["_rp_auto_for"] = st.session_state["_rp_msg_seen"] = _pf.get("rp_msg", "")
+
+# ---------------- 📥 رسالة العميل ← الرد المقترح ----------------
+msg_in = st.text_area("📥 رسالة العميل (اختياري) — الصقها والبرنامج يقترح الرد", key="rp_msg", height=90,
+                      placeholder="مثال: الأسعار عندكم غالية… / محتاج صيام قبل التحليل؟ / عنوانكم فين؟")
+CHAT = WI.parse_chat(msg_in) if (msg_in or "").strip() else None
+MSG_TESTS = []
+if CHAT:
+    if st.session_state.get("_rp_msg_seen") != msg_in:      # نملا الاسم/الرقم مرة واحدة لكل رسالة
+        st.session_state["_rp_msg_seen"] = msg_in
+        if CHAT["name"] and not (st.session_state.get("rp_name") or "").strip():
+            st.session_state["rp_name"] = CHAT["name"]
+        if CHAT["phone"] and not (st.session_state.get("rp_phone") or "").strip():
+            st.session_state["rp_phone"] = CHAT["phone"]
+    _an = WI.analyze_tests(CHAT["customer_text"], IDX)
+    MSG_TESTS = [rec for _t, rec in _an["confident"]]
+    _intents = WI.detect_intents(CHAT["customer_text"], has_media=CHAT["has_media"])
+    _sug = RP.suggested(_intents)
+    if _sug:
+        st.caption("💡 الرد المقترح (اضغط عشان تختاره):")
+        _cols = st.columns(min(3, len(_sug)))
+        for _i, _t in enumerate(_sug[:3]):
+            if _cols[_i].button(f"💡 {_t['title']}", key=f"rp_sug_{_t['id']}", use_container_width=True):
+                st.session_state["rp_reply"] = _t["id"]
+        if "rp_reply" not in st.session_state or st.session_state.get("_rp_auto_for") != msg_in:
+            st.session_state["_rp_auto_for"] = msg_in
+            st.session_state["rp_reply"] = _sug[0]["id"]
+    elif not MSG_TESTS:
+        st.caption("ماعرفتش نية واضحة في الرسالة — اختار الرد بنفسك تحت.")
+    if MSG_TESTS:
+        st.caption("🧪 في الرسالة: " + "، ".join(r.name for r in MSG_TESTS) + " — اعمله عرض سعر من صفحة Invoice")
 
 # ---------------- العميل والفرع ----------------
 c1, c2 = st.columns(2)
@@ -135,13 +188,32 @@ inc_fhv = t2.toggle("🎁 الزيارة المجانية", value=False, key="rp
 
 offers_text = RP.offer_lines([OC.get(i) for i in sel_offers],
                              [p for p in promos_now if p["id"] in sel_promos])
+
+# بيانات العرض المسجّل (لو اخترته) أو التحاليل اللي في رسالة العميل
+_names = list(rec["items"]) if rec else [r.name for r in MSG_TESTS]
+_days = []
+for _n in _names:
+    _h = IDX.get(_n)
+    _days.append(_h[0].result_days if _h else None)
+inc_quote = st.toggle("🧾 العرض + الكود + التحضير + ميعاد النتيجة", value=bool(rec or MSG_TESTS), key="rp_quote_on",
+                      disabled=not (rec or MSG_TESTS),
+                      help="من العرض اللي اخترته فوق (أو التحاليل اللي في رسالة العميل)")
+_branch_names = [(CFG["branches"].get(b) or {}).get("name_ar", b) for b in BRANCHES]
+quote_text = RP.quote_block(rec["items"], rec["total"], discount=rec["discount"]) if (inc_quote and rec) else ""
+code_text = RP.code_line(rec["quote_id"]) if (inc_quote and rec and not rec["is_lead"]) else ""
+prep_text = prep_block(_names, BUNDLE_COMPONENTS) if (inc_quote or tpl["id"] == "prep") else ""
+eta_txt = eta_text(_days) if (inc_quote or tpl["id"] == "result_time") else ""
+appt_text = RP.appt_line(rec["appointment"]) if (rec and rec["appointment"]) else ""
+cta_text = RP.booking_cta(_branch_names) if (inc_quote and tpl["kind"] in ("quote", "objection")) else ""
 fhv_text = (running_fhv[0].get("text_ar", "") if (inc_fhv and running_fhv) else "")
 branch_text = config_store.branch_block(binfo) if (inc_branch and binfo) else ""
 text0 = RP.render_reply(tpl, version, name=name, lab=LAB_NAME_AR, offers_text=offers_text, fhv_text=fhv_text,
                         branch_text=branch_text, review_url=config_store.resolve_links(CFG, st.secrets)["review_url"],
-                        phone=(binfo or {}).get("phone", ""))
+                        phone=(binfo or {}).get("phone", ""), quote_text=quote_text, code_text=code_text,
+                        prep_text=prep_text, eta_text=eta_txt, appt_text=appt_text, cta_text=cta_text)
 text = st.text_area("نص الرد (تقدر تعدّله)", value=text0, height=260,
-                    key=f"rp_txt_{rid}_{version}_{branch}_{inc_branch}_{inc_fhv}_{','.join(sel_offers)}_{','.join(sel_promos)}_{name.strip()}")
+                    key=f"rp_txt_{rid}_{version}_{branch}_{inc_branch}_{inc_fhv}_{','.join(sel_offers)}_{','.join(sel_promos)}"
+                        f"_{name.strip()}_{qid}_{inc_quote}_{len(_names)}")
 
 blocked = bool(prof and prof["optout"])
 if not blocked:
@@ -166,7 +238,14 @@ else:
                        format_func=lambda k: {"none": "سجّل الرد بس",
                                               "followup": f"⏰ متابعة بعد {tpl['followup_hours'] or 24} ساعة",
                                               "lost": "❌ فات / مش مكمّل"}[k])
-    ok_f, why_f = (can_schedule_followup(rec, now, opted=opted) if rec else (False, "اختار العرض الأول"))
+    if rec:
+        ok_f, why_f = can_schedule_followup(rec, now, opted=opted)
+    elif cust_phone and not (prof and prof["optout"]):
+        ok_f, why_f = True, ""
+    else:
+        ok_f, why_f = False, "اكتب رقم العميل أو اختار العرض الأول"
+    if outcome == "followup" and not rec and ok_f:
+        st.caption("🟡 مفيش عرض — العميل هيتسجّل «مستفسر» (Lead) ويظهر في Follow-up، وبيتقفل لوحده لما تعمله عرض سعر.")
     if outcome == "followup":
         st.caption("✅ تقدر تسجّل متابعة" if ok_f else f"⚠️ مش هتتسجّل متابعة: {why_f}")
     reason = None
@@ -186,12 +265,22 @@ else:
             return False
 
     if st.button("✅ سجّل المحادثة", key="rp_log", type="primary", use_container_width=True):
-        if outcome != "none" and not rec:
-            st.error("اختار العرض اللي الكلام عليه الأول عشان تسجّل متابعة أو فوات")
+        if outcome == "lost" and not rec:
+            st.error("اختار العرض اللي الكلام عليه الأول عشان تسجّل فوات")
+        elif outcome == "followup" and not rec and not ok_f:
+            st.error(f"مش هتتسجّل متابعة: {why_f}")
         else:
-            evs = [make_event("reply", qid if rec else "", branch=branch, staff=STAFF.strip(), phone_key=PK,
+            lead_id = new_lead_id(now) if (outcome == "followup" and not rec) else ""
+            evs = [make_event("reply", qid if rec else lead_id, branch=branch, staff=STAFF.strip(), phone_key=PK,
                               meta={"objection": tpl["objection"], "kind": tpl["kind"], "reply": rid, "version": version})]
             note = "اتسجّل الرد"
+            if lead_id:
+                evs.insert(0, make_event(
+                    "lead", lead_id, branch=branch, referral_source=WHATSAPP_SOURCE, phone_key=PK, staff=STAFF.strip(),
+                    contact=({"name": name.strip(), "phone": cust_phone} if STORE_CONTACTS else None),
+                    note=rid, meta={"next_due": (now + timedelta(hours=tpl["followup_hours"] or 24)).isoformat(timespec="seconds"),
+                                    "via": "reply"}))
+                note += " + اتسجّل مستفسر (Lead) بمتابعة"
             if outcome == "followup" and rec:
                 if ok_f:
                     evs.append(make_event("followup", qid, branch=branch, staff=STAFF.strip(),

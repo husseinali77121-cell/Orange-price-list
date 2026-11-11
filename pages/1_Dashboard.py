@@ -22,7 +22,7 @@ from price_utils import build_index
 import config_store
 import replies as RP
 from tracking import (crm_kpis, marketing_kpis, month_key, objection_stats, quote_records,
-                      summarize_events)
+                      summarize_events, whatsapp_funnel)
 
 st.set_page_config(page_title="Orange Lab - Dashboard", page_icon="📊", layout="wide")
 
@@ -138,6 +138,36 @@ a4.metric("متوسط الوقت للحجز",
 if kp["prepared_not_sent"]:
     st.caption(f"ℹ️ {kp['prepared_not_sent']} عرض اتجهّز ومحدّش أكّد إنه اتبعت — "
                "دول مش داخلين في «اتبعتت فعلاً».")
+
+st.divider()
+
+# ------------------------------------------------------------
+# 💬 عملاء الواتساب: استفسار ← عرض ← اتبعت ← حجز ← حضر + سرعة الرد
+# ------------------------------------------------------------
+wf = whatsapp_funnel(events)
+st.markdown("#### 💬 عملاء الواتساب — من السؤال للحضور")
+if wf["leads"] or wf["quotes"]:
+    w1, w2, w3, w4, w5, w6 = st.columns(6)
+    w1.metric("🟡 استفسارات من غير عرض", wf["leads"], help="اتسجّلوا «مستفسر» ولسه مابعتوش الروشتة")
+    w2.metric("🧾 عروض سعر", wf["quotes"])
+    w3.metric("📲 اتبعتت", wf["sent"])
+    w4.metric("📅 حجزوا", wf["booked"])
+    w5.metric("✅ حضروا", wf["visited"])
+    w6.metric("Visit Rate", f"{wf['visit_rate_pct']}%", help="حضروا ÷ اتبعتلهم العرض")
+    x1, x2, x3 = st.columns(3)
+    x1.metric("من مستفسر لعرض سعر", f"{wf['quote_rate_pct']}%", help=f"{wf['leads_quoted']} من {wf['leads']}")
+    x2.metric("قيمة اللي حضروا", f"{wf['value_visited']:,} ج.م")
+    x3.metric("سرعة الرد (الوسيط)",
+              f"{wf['median_response_min']:.0f} دقيقة" if wf["median_response_min"] is not None else "—",
+              help="من وقت رسالة العميل (من المحادثة الملزوقة) لحد «إرسال + متابعة»")
+    if wf["by_response"]:
+        st.dataframe(pd.DataFrame([{"سرعة الرد": b["bucket"], "اتبعتت": b["sent"], "حضروا": b["visited"],
+                                    "Visit Rate %": b["rate"]} for b in wf["by_response"]]),
+                     use_container_width=True, hide_index=True)
+        st.caption("لو الـ Visit Rate بيقل كل ما الرد يتأخر — ده رقمك اللي يقنع الفريق يرد أسرع.")
+else:
+    st.caption("لسه مفيش عروض مصدرها واتساب. لما تلزق محادثة العميل في «💬 استفسار واتساب» بالفاتورة، "
+               "المصدر ووقت الرسالة بيتسجّلوا لوحدهم.")
 
 st.divider()
 

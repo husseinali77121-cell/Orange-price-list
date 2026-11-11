@@ -28,7 +28,7 @@ if not store:
                "دلوقتي بتشوف البيانات الافتراضية بس.")
 
 who = st.text_input("اسمك (كل تعديل بيتسجّل باسمك)", key="br_who")
-tab_b, tab_l, tab_s = st.tabs(["📍 Branches", "🔗 Links", "🩺 Setup check"])
+tab_b, tab_l, tab_p, tab_s = st.tabs(["📍 Branches", "🔗 Links", "⚙️ Policy", "🩺 Setup check"])
 with tab_b:
     for key, info in cfg["branches"].items():
         with st.expander(f"📍 {info['name_ar']} — {info.get('name_en', key)}", expanded=True):
@@ -87,6 +87,39 @@ with tab_l:
             try:
                 config_store.save_section(store, "links", new_links, who=who, note="links")
                 st.success("اتحفظ ✅")
+            except ValueError as e:
+                st.error(str(e))
+            except GithubStoreError as e:
+                st.error(f"مقدرتش أحفظ: {e}")
+
+# ---------------- سياسة الخصم والمتابعة ----------------
+with tab_p:
+    pol = cfg["policy"]
+    st.caption("أي خصم أكبر من الحد ده بيقفل إرسال الواتساب لحد ما المسؤول يكتب كود الموافقة "
+               "(discount_approval_pin في Secrets). عروض الكتالوج الرسمية والاسترجاع المعتمد مش محتاجين كود.")
+    lim = st.number_input("حد الخصم بدون موافقة (%)", min_value=0, max_value=100, step=5,
+                          value=int(round(config_store.discount_limit(cfg))), key="pol_limit",
+                          help="0 = مفيش حد. الافتراضي 50%.")
+    _fh_opts = [3, 6, 24, 48, 72, 0]
+    fh = st.selectbox("ميعاد المتابعة الافتراضي بعد إرسال العرض", _fh_opts,
+                      index=_fh_opts.index(config_store.followup_hours(cfg)), key="pol_fu",
+                      format_func=lambda h: {0: "من غير متابعة", 3: "بعد 3 ساعات", 6: "بعد 6 ساعات",
+                                             24: "بكرة (24 ساعة)", 48: "بعد يومين", 72: "بعد 3 أيام"}[h])
+    if not secret_str(st.secrets, "discount_approval_pin"):
+        st.warning("⚠️ مفيش discount_approval_pin في Secrets — الخصم الكبير هيظهر تحذير بس ومش هيقفل الإرسال.")
+    if st.button("💾 احفظ السياسة", type="primary", key="pol_save"):
+        new_pol = {**pol, "discount_limit_pct": float(lim), "followup_hours": int(fh)}
+        errs = config_store.validate_policy(new_pol)
+        if errs:
+            for e in errs:
+                st.error(e)
+        elif not store:
+            st.error("التتبّع مش متظبط — مقدرتش أحفظ")
+        else:
+            try:
+                config_store.save_section(store, "policy", new_pol, who=who,
+                                          note=f"discount limit {lim}% · follow-up {fh}h")
+                st.success(f"اتحفظ ✅ — الحد بقى {lim}% (بيتطبّق في الفاتورة خلال دقيقتين)")
             except ValueError as e:
                 st.error(str(e))
             except GithubStoreError as e:
