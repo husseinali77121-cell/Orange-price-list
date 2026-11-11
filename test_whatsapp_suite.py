@@ -395,6 +395,38 @@ check("branches → Policy: admin saves a new limit (audited)",
       (_j.loads(stored["content"])["policy"]["discount_limit_pct"] if stored else None,
        [e["type"] for e in gh.events()]), (40.0, ["config_change"]))
 
+# ============================================================
+# 9) بيانات الفرع في رسالة الفاتورة: لوكيشن / عنوان بالتفصيل / مواعيد / رقم المعمل
+# ============================================================
+LACITE = {"name_ar": "فرع لاسيتيه", "phone": "+20 1032847185", "maps": "https://maps.app.goo.gl/XR1kcfeN1XJ36i3J7?g_st=ac",
+          "address": ("الحصري - المحور المركزي- لاسيتيه مول - بجوار خير زمان وصيدلية العزبي- اعلي تاكي والراضي "
+                      "للمكسرات- مدخل العمارة خلف الراضي (في الممر اول يمين)"),
+          "hours": ("مواعيد العمل يوميا من 9 ص الي 10 م ما عدا الخميس والجمعة اجازة والزيارات المنزلية في اي وقت.... "
+                    "حسب الحجز.")}
+b = cs.branch_parts_block(LACITE, ["maps", "phone", "hours", "address"])
+check("branch parts: fixed order address → hours → phone → map",
+      [ln.split()[0] for ln in b.splitlines()], ["📍", "🏠", "🕘", "📞", "🗺️"])
+check("hours text cleaned («....» ← «،»)", "في اي وقت، حسب الحجز" in b, True)
+check("only the chosen parts", cs.branch_parts_block(LACITE, ["phone"]).splitlines()[1:], ["📞 رقم المعمل: \u200e+20 1032847185"])
+check("nothing chosen -> empty", cs.branch_parts_block(LACITE, []), "")
+REAL_CFG = {"branches": {"Orange (La Cité)": LACITE}}
+fake, g, gh = invoice(config=REAL_CFG)
+check("all parts on: address+hours go to message 2 (not dropped)",
+      (g["_SPLIT"], "🏠 العنوان: الحصري" in g["BRANCH_MSG2"], "🕘 مواعيد العمل" in g["BRANCH_MSG2"],
+       "📞 رقم المعمل" in g["BRANCH_MSG2"], LACITE["maps"] in g["BRANCH_MSG2"]), (True, True, True, True, True))
+check("message 1 keeps the location; both links within the WhatsApp limit",
+      (LACITE["maps"] in g["wa_msg"], len(g["wa_url"]) <= g["MAX_WA_URL"], len(g["BRANCH_URL2"]) <= g["MAX_WA_URL"]),
+      (True, True, True))
+m2 = [c for c in fake.calls if c[0] == "link" and "رسالة 2" in c[1]]
+check("«📍 رسالة 2» button opens the same customer's chat", bool(m2) and f"wa.me/{E164}" in m2[0][2], True)
+check("fasting prep still in message 1", "صيام 9–12" in g["wa_msg"], True)
+fake, g, gh = invoice(config=REAL_CFG, state={"wa_bp_address": False, "wa_bp_hours": False})
+check("location + phone only: one message, no 2nd button",
+      (g["_SPLIT"], "📞 رقم المعمل" in g["wa_msg"], LACITE["maps"] in g["wa_msg"],
+       any("رسالة 2" in c[1] for c in fake.calls if c[0] == "link")), (False, True, True, False))
+fake, g, gh = invoice(config=REAL_CFG, state={f"wa_bp_{p}": False for p in ("maps", "address", "hours", "phone")})
+check("all unchecked: no branch info at all", ("📍 *فرع" in g["wa_msg"], g["_SPLIT"]), (False, False))
+
 print("\n" + "=" * 78)
 if fails:
     print(f"{len(fails)} FAILURE(S)")

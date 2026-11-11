@@ -1227,7 +1227,16 @@ _fhv_on = any(r["eligible"] for r in FHV_RES) and st.toggle(
     "🎁 إضافة الزيارة المجانية لرسالة العميل", value=True, key="wa_fhv")
 FHV_IDS = CP.benefit_ids(FHV_RES) if _fhv_on else []
 _BINFO = CFG["branches"].get(st.session_state.branch)
-_branch_on = bool(_BINFO) and st.toggle("📍 إرفاق عنوان ومواعيد الفرع مع العرض", value=True, key="wa_branch_info")
+# بيانات الفرع: كل بند باختيار لوحده (من Branches ← بيانات الفرع)
+_bparts = []
+if _BINFO:
+    st.markdown(f"**📍 بيانات {_BINFO.get('name_ar', 'الفرع')} في الرسالة**")
+    _bc = st.columns(4)
+    for _i, _p in enumerate(("maps", "address", "hours", "phone")):
+        if _bc[_i].checkbox(config_store.BRANCH_PART_LABELS[_p], value=True, key=f"wa_bp_{_p}"):
+            _bparts.append(_p)
+_branch_on = bool(_bparts)
+_LONG_PARTS = [p for p in _bparts if p not in config_store.SHORT_BRANCH_PARTS]   # العنوان/المواعيد
 _t1, _t2, _t3 = st.columns(3)
 _cta_on = _t1.toggle("✅ طريقة الحجز", value=True, key="wa_cta",
                      help="«للحجز ردّ برقم: 1 لاسيتيه · 2 دياموند · 3 سحب منزلي» — العميل يرد برقم بدل ما يفكّر")
@@ -1238,8 +1247,9 @@ _prep_on = _t3.toggle("🧪 تعليمات التحضير", value=True, key="wa_
 _PREP_TXT = prep_block([i["name"] for i in items], _BUNDLE_COMPONENTS) if (items and _prep_on) else ""
 
 
-# الرسالة بتتبني بمستويات: لو لينك واتساب طويل، بنختصر الأقل أهمية الأول (عنوان الفرع الكامل ←
-# تعليمات العينة ← التحضير ← طريقة الحجز) — الإجمالي والكود وخريطة الفرع بيفضلوا لآخر لحظة.
+# الرسالة بتتبني بمستويات: لو لينك واتساب طويل، العنوان بالتفصيل والمواعيد بيتنقلوا لرسالة تانية
+# (مابيتشالوش)، وبعدها بنختصر الأقل أهمية (تعليمات العينة ← التحضير ← طريقة الحجز). الإجمالي
+# والكود واللوكيشن ورقم المعمل بيفضلوا في رسالة العرض لآخر لحظة.
 #   level: (رسالة كاملة؟, التحضير, طريقة الحجز: full/short/none, الفرع كامل؟, الكود كامل؟)
 _LEVELS = [(True, True, "full", True, True), (True, True, "full", False, True),
            (False, True, "full", False, True), (False, False, "short", False, False),
@@ -1265,7 +1275,15 @@ def _msg(level) -> str:
     elif _cta_on and ar and cta == "short":
         extra.append("✅ للحجز ردّ: " + " · ".join(f"{i + 1} {n}" for i, n in enumerate(_BRANCH_NAMES[:2] + ["سحب منزلي"])))
     if _branch_on and not last:
-        extra.append(config_store.branch_block(_BINFO, compact=not branch_full))
+        if branch_full:
+            _parts = _bparts
+        elif _LONG_PARTS:                 # فيه رسالة 2 فيها كل حاجة ← العرض ياخد اللوكيشن بس
+            _parts = [p for p in _bparts if p == "maps"]
+        else:
+            _parts = [p for p in _bparts if p in config_store.SHORT_BRANCH_PARTS]
+        _blk = config_store.branch_parts_block(_BINFO, _parts)
+        if _blk:
+            extra.append(_blk)
     if _code_on:
         extra.append(RP.code_line(st.session_state.quote_id) if (code_full and ar) else f"🔖 {st.session_state.quote_id}")
     return base + ("\n\n" + "\n\n".join(extra) if extra else "")
@@ -1280,6 +1298,10 @@ for WA_LEVEL in range(len(_LEVELS)):
         break
 else:
     wa_note = "⚠️ الفاتورة كبيرة جداً على لينك واتساب — استخدم PDF أو انسخ الرسالة يدوي"
+# العنوان بالتفصيل/المواعيد ماكفّوش مع العرض ← رسالة 2 لوحدها (نفس رقم العميل، زرار تحت زرار الإرسال)
+_SPLIT = bool(_LONG_PARTS) and not _LEVELS[min(WA_LEVEL, len(_LEVELS) - 1)][3]
+BRANCH_MSG2 = config_store.branch_parts_block(_BINFO, _bparts) if _SPLIT else ""
+BRANCH_URL2 = build_whatsapp_url(_wa_phone, BRANCH_MSG2) if BRANCH_MSG2 else ""
 if not wa_note and WA_LEVEL >= 3:
     wa_note = "الرسالة طويلة — اتختصرت (التحضير/طريقة الحجز) عشان لينك واتساب يشتغل"
 if wa_note and items:
@@ -1383,6 +1405,17 @@ def log_sent(via: str) -> bool:
         return False
 
 
+def branch_second_message():
+    """زرار «رسالة 2»: العنوان بالتفصيل + المواعيد + رقم المعمل + اللوكيشن — لما مايكفّوش مع العرض."""
+    if not BRANCH_MSG2:
+        return
+    if len(BRANCH_URL2) <= MAX_WA_URL:
+        st.link_button("📍 رسالة 2: العنوان بالتفصيل والمواعيد", BRANCH_URL2, use_container_width=True)
+    else:
+        st.code(BRANCH_MSG2, language=None)
+    st.caption("ابعتها بعد العرض — العرض + العنوان والمواعيد مع بعض أطول من حد لينك واتساب")
+
+
 s1, s2, s3 = st.columns(3)
 
 with s1:
@@ -1415,6 +1448,7 @@ with s1:
         elif st.button("✅ تم الإرسال (لو ماتسجّلش لوحده)", use_container_width=True, key="btn_sent"):
             log_sent("button")
             st.rerun()
+        branch_second_message()
     else:
         st.markdown(
             f'<a href="{wa_url}" target="_blank" style="text-decoration:none;">'
@@ -1423,6 +1457,7 @@ with s1:
             f'📲 إرسال لـ {format_phone_display(phone_chk.value)}</div></a>',
             unsafe_allow_html=True)
         st.caption("التتبّع مش متظبط (secrets) — الإرسال شغّال، بس من غير متابعة ولا تسجيل")
+        branch_second_message()
         if st.button("✅ تم الإرسال للعميل", use_container_width=True, key="btn_sent"):
             log_sent("button")
             st.rerun()

@@ -167,6 +167,40 @@ def validate_branch(info: dict) -> List[str]:
     return errs
 
 
+# بنود بيانات الفرع اللي الموظف يختارها في رسالة الفاتورة (بالترتيب اللي بتظهر بيه)
+BRANCH_PARTS = ("address", "hours", "phone", "maps")
+BRANCH_PART_LABELS = {"maps": "📍 اللوكيشن", "address": "🏠 العنوان بالتفصيل",
+                      "hours": "🕘 مواعيد العمل", "phone": "📞 رقم المعمل"}
+SHORT_BRANCH_PARTS = ("phone", "maps")        # قصيرين: بيدخلوا رسالة العرض دايماً
+
+
+def _clean_hours(h: str) -> str:
+    h = re.sub(r"\s*\.{2,}\s*", "، ", (h or "").strip())      # «في اي وقت.... حسب الحجز» ← «في اي وقت، حسب الحجز»
+    return h if h.startswith("مواعيد") else f"مواعيد العمل: {h}"
+
+
+def branch_parts_block(info: dict, parts, *, title: str = "") -> str:
+    """
+    بيانات الفرع بالبنود المختارة بس (عنوان بالتفصيل / مواعيد / رقم المعمل / لوكيشن).
+    title = سطر العنوان (افتراضي «📍 *اسم الفرع*»).
+    """
+    parts = [p for p in BRANCH_PARTS if p in set(parts or [])]
+    if not info or not parts:
+        return ""
+    if parts == ["maps"] and not title:          # لوكيشن بس: نفس الشكل المختصر القديم (أقصر في اللينك)
+        return f"📍 {info.get('name_ar', '')}\n🗺️ {info['maps'].strip()}" if info.get("maps") else ""
+    lines = [title or f"📍 *{info.get('name_ar', '')}*"]
+    if "address" in parts and info.get("address"):
+        lines.append(f"🏠 العنوان: {info['address'].strip()}")
+    if "hours" in parts and info.get("hours"):
+        lines.append(f"🕘 {_clean_hours(info['hours'])}")
+    if "phone" in parts and info.get("phone"):
+        lines.append(f"📞 رقم المعمل: ‎{info['phone'].strip()}")
+    if "maps" in parts and info.get("maps"):
+        lines.append(f"🗺️ اللوكيشن: {info['maps'].strip()}")
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
 def branch_block(info: dict, *, compact: bool = False) -> str:
     """بيانات الفرع اللي بتتبعت مع عرض السعر: عنوان + مواعيد + رقم + خريطة (+ خدمات)."""
     if compact:
