@@ -99,25 +99,39 @@ check("sent button hidden when phone invalid", types(gh), [])
 # ------------------------------------------------------------
 # 3) موافقة الخصم
 # ------------------------------------------------------------
+# الحد بقى 50% افتراضي (كان 20% في Secrets) ومن الإعدادات (Branches ← Policy)
+import config_store as cs
 disc30 = {"discount_type": "Percentage", "discount_value": 30.0, "disc_Percentage_0": 30.0}
-pol = {"discount_limit_pct": 20, "discount_approval_pin": "1234"}
-fake, g, gh = invoice(state=disc30, secrets=pol)
-check("30% > limit: blocked, no quote logged", (types(gh), "الخصم محتاج موافقة المسؤول" in g["blockers"]),
+disc60 = {"discount_type": "Percentage", "discount_value": 60.0, "disc_Percentage_0": 60.0}
+pol = {"discount_approval_pin": "1234"}
+fake, g, gh = invoice(state=disc30, secrets={**pol, "discount_limit_pct": 20})
+check("30% now passes (limit is 50%; the old 20% secret is ignored)",
+      (types(gh), "الخصم محتاج موافقة المسؤول" in g["blockers"]), (["quote"], False))
+check("effective limit is 50%", g["DISCOUNT_LIMIT_PCT"], 50.0)
+fake, g, gh = invoice(state={**disc30, "discount_value": 50.0, "disc_Percentage_0": 50.0}, secrets=pol)
+check("50% exactly at the limit: no approval", (types(gh), g["blockers"]), (["quote"], []))
+fake, g, gh = invoice(state=disc60, secrets=pol)
+check("60% > 50% limit: blocked, no quote logged", (types(gh), "الخصم محتاج موافقة المسؤول" in g["blockers"]),
       ([], True))
-fake, g, gh = invoice(state=disc30, secrets=pol, typed={"disc_pin": "9999"})
+check("blocked => no WhatsApp send button", any("wa.me" in str(c[1]) for c in fake.calls if c[0] == "components.html"), False)
+fake, g, gh = invoice(state=disc60, secrets=pol, typed={"disc_pin": "9999"})
 check("wrong PIN: still blocked + error", (types(gh), any("غلط" in m for m in fake.messages("error"))),
       ([], True))
-fake, g, gh = invoice(state=disc30, secrets=pol, typed={"disc_pin": "1234"})
+fake, g, gh = invoice(state=disc60, secrets=pol, typed={"disc_pin": "1234"})
 q = [e for e in gh.events() if e["type"] == "quote"]
-check("right PIN: unblocked, quote logged with approval", (len(q), q[0]["meta"] if q else None),
+check("right PIN: unblocked, quote logged with approval", (len(q), q[0].get("meta") if q else None),
       (1, {"approved": True}))
-fake, g, gh = invoice(state={**disc30, "discount_value": 15.0, "disc_Percentage_0": 15.0}, secrets=pol)
-check("15% under limit: no approval needed", (types(gh), g["blockers"]), (["quote"], []))
-fake, g, gh = invoice(state=disc30, secrets={"discount_limit_pct": 20})
+fake, g, gh = invoice(state=disc60)
 check("limit without PIN configured: warns, doesn't block", (types(gh), any(
     "discount_approval_pin" in m for m in fake.messages("warning"))), (["quote"], True))
-fake, g, gh = invoice(state=disc30)
-check("no policy configured: no restriction", types(gh), ["quote"])
+_gh = fs.FakeGitHub()
+_gh.put_json(cs.CONFIG_PATH, {"policy": {"discount_limit_pct": 20}})
+fake, g, gh = invoice(state=disc30, secrets=pol, gh=_gh)
+check("admin can still set a stricter limit (20%) from Policy", "الخصم محتاج موافقة المسؤول" in g["blockers"], True)
+_gh = fs.FakeGitHub()
+_gh.put_json(cs.CONFIG_PATH, {"policy": {"discount_limit_pct": 0}})
+fake, g, gh = invoice(state=disc60, secrets=pol, gh=_gh)
+check("policy 0 = no restriction", types(gh), ["quote"])
 
 # ------------------------------------------------------------
 # 4) اللينك المحفوظ: تشفير + انتهاء + حملة
@@ -295,12 +309,12 @@ for path, name in [("pages/1_Dashboard.py", "1_Dashboard"), ("pages/3_Follow_Up.
     f_, g_, gh_ = page(path)
     ln = [c[1][0] for c in f_.calls if c[0] == "page_link"]
     check(f"{name}: nav present, excludes itself, links back to invoice",
-          (path not in ln, "Invoice.py" in ln, len(ln)), (True, True, 8))
+          (path not in ln, "Invoice.py" in ln, len(ln)), (True, True, 9))
 
 check("no stray files in pages/ (every page starts with a number)",
       [f for f in os.listdir("pages") if f.endswith(".py") and not f[0].isdigit()], [])
 check("nav labels are English (as requested)", [l for _p, _i, l in navigation.NAV_PAGES],
-      ["Invoice", "Studio", "Dashboard", "Follow-up", "Offers", "Customers", "Branches", "Gifts", "Replies"])
+      ["Invoice", "Studio", "Dashboard", "Follow-up", "Offers", "Customers", "Branches", "Gifts", "Replies", "Check-in"])
 check("nav labels contain no Arabic letters", any("\u0600" <= ch <= "\u06FF" for _p, _i, l in navigation.NAV_PAGES for ch in l), False)
 check("nav buttons are boxed (border + background in CSS)", all(
     k in navigation.NAV_CSS for k in ("border:2px solid", "border-radius", "background:#FFF3EA")), True)
@@ -317,7 +331,7 @@ class Flaky(fs.FakeSt):
 
 
 fk = Flaky()
-check("nav survives a missing page (no crash, others shown)", navigation.render_nav(fk, ""), 8)
+check("nav survives a missing page (no crash, others shown)", navigation.render_nav(fk, ""), 9)
 
 
 class OldStreamlit(fs.FakeSt):
@@ -327,7 +341,7 @@ class OldStreamlit(fs.FakeSt):
         self.calls.append(("page_link_ok", path))
 
 
-check("nav falls back for old Streamlit (no use_container_width)", navigation.render_nav(OldStreamlit(), ""), 9)
+check("nav falls back for old Streamlit (no use_container_width)", navigation.render_nav(OldStreamlit(), ""), 10)
 
 # صورة عروض الباقات داخل الفاتورة
 fake, g, gh = invoice()

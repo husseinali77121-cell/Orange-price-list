@@ -19,7 +19,13 @@ from campaigns import FREE_HOME_VISIT_SEED
 from tracking import DEFAULT_VIP_RULES
 
 CONFIG_PATH = "config/app_config.json"
-SECTIONS = ("branches", "campaigns", "vip", "gifts", "staff", "areas", "links")
+SECTIONS = ("branches", "campaigns", "vip", "gifts", "staff", "areas", "links", "policy")
+
+# سياسة الخصم: أي خصم أكبر من الحد ده بيقفل إرسال الواتساب لحد ما المسؤول يكتب كود الموافقة
+# (discount_approval_pin في Secrets). الحد بقى 50% (كان 20%) وبيتعدّل من Branches ← Policy.
+# discount_limit_pct القديم في Secrets مابقاش مستخدم — الإعدادات هنا هي المرجع.
+DEFAULT_DISCOUNT_LIMIT_PCT = 50.0
+DEFAULT_POLICY = {"discount_limit_pct": DEFAULT_DISCOUNT_LIMIT_PCT, "followup_hours": 24}
 
 DEFAULT_AREAS = ["6 October", "Sheikh Zayed", "Other"]
 DEFAULT_GIFTS = [{"id": "welcome_gift", "name": "Welcome Gift", "cost": 0}]
@@ -38,7 +44,8 @@ def default_config() -> dict:
     return {"branches": branches, "campaigns": [copy.deepcopy(FREE_HOME_VISIT_SEED)],
             "vip": dict(DEFAULT_VIP_RULES), "gifts": copy.deepcopy(DEFAULT_GIFTS),
             "staff": [], "areas": list(DEFAULT_AREAS),
-            "links": {"app_url": "", "review_url": "", "facebook_page_url": ""}}
+            "links": {"app_url": "", "review_url": "", "facebook_page_url": ""},
+            "policy": dict(DEFAULT_POLICY)}
 
 
 def effective(stored) -> dict:
@@ -56,7 +63,38 @@ def effective(stored) -> dict:
         cfg["vip"].update(stored["vip"])
     if isinstance(stored.get("links"), dict):
         cfg["links"].update({k: str(v or "").strip() for k, v in stored["links"].items()})
+    if isinstance(stored.get("policy"), dict):
+        cfg["policy"].update(stored["policy"])
     return cfg
+
+
+def discount_limit(cfg: dict) -> float:
+    """حد الخصم (٪) اللي فوقه الإرسال بيتقفل إلا بكود الموافقة. 0 = مفيش حد. افتراضي 50%."""
+    try:
+        v = float((cfg.get("policy") or {}).get("discount_limit_pct", DEFAULT_DISCOUNT_LIMIT_PCT))
+    except (TypeError, ValueError):
+        return DEFAULT_DISCOUNT_LIMIT_PCT
+    return min(max(v, 0.0), 100.0)
+
+
+def followup_hours(cfg: dict) -> int:
+    """ميعاد المتابعة الافتراضي بعد إرسال العرض (ساعات)."""
+    try:
+        v = int(float((cfg.get("policy") or {}).get("followup_hours", 24)))
+    except (TypeError, ValueError):
+        return 24
+    return v if v in (0, 3, 6, 24, 48, 72) else 24
+
+
+def validate_policy(p: dict) -> List[str]:
+    errs = []
+    try:
+        v = float(p.get("discount_limit_pct", 0))
+        if not 0 <= v <= 100:
+            errs.append("حد الخصم لازم بين 0 و 100")
+    except (TypeError, ValueError):
+        errs.append("حد الخصم لازم رقم")
+    return errs
 
 
 def resolve_links(cfg: dict, secrets=None) -> dict:

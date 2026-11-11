@@ -329,7 +329,13 @@ def studio(state=None, secrets=None, events=None, cfg=True, typed=None):
 
 
 def wa_links(fake):
-    return [unquote(x[2]) for x in fake.calls if x[0] == "link" and "wa.me" in x[2]]
+    """link_button + زرار «إرسال لـ…» (components.html من wa_bridge)."""
+    import re as _re
+    out = [unquote(x[2]) for x in fake.calls if x[0] == "link" and "wa.me" in x[2]]
+    for x in fake.calls:
+        if x[0] == "components.html" and "wa.me" in str(x[1]):
+            out += [unquote(u) for u in _re.findall(r'href="(https://wa\.me[^"]+)"', str(x[1]))]
+    return out
 
 
 SHORT = {"ms_branch_info": False, "ms_disc": False, "ms_template": "tip", "ms_headline": "نصيحة", "ms_body": "جملة قصيرة",
@@ -340,11 +346,12 @@ check("studio: caption starts with the customer's first name", cap.startswith("�
 check("studio: WhatsApp opens straight on the customer's number",
       [l.split("?")[0] for l in wa_links(fake)], ["https://wa.me/201012345678"])
 check("studio: the link carries the greeting", any("أهلاً Mona" in l for l in wa_links(fake)), True)
-check("studio: button says 'to the customer'", any("واتساب للعميل" in x[1] for x in fake.calls if x[0] == "link"), True)
+check("studio: button says 'send to <name>' (direct, like the invoice)",
+      any("إرسال لـ Mona" in str(x[1]) for x in fake.calls if x[0] == "components.html"), True)
 
 fake, g = studio({**SHORT, "ms_cust_name": "", "ms_cust_phone": "123"})
 check("studio: invalid customer phone -> warned, chat picker (no number)",
-      (any("مش صالح" in str(x) for x in fake.calls if x[0] == "caption"),
+      (any("❌" in str(x) for x in fake.calls if x[0] == "markdown"),
        [l.split("?")[0] for l in wa_links(fake)]), (True, ["https://wa.me/"]))
 fake, g = studio(SHORT)
 check("studio: no customer data -> generic greeting-free caption", fake.session_state["ms_cap_txt"].startswith("🍊"), True)

@@ -39,8 +39,8 @@ def ev(typ, qid, hours_ago, **kw):
 # 1) كتالوج الردود
 # ------------------------------------------------------------
 ids = [r["id"] for r in RP.REPLIES]
-check("13 replies, unique ids", (len(ids), len(set(ids))), (13, 13))
-check("3 groups, each used", {r["group"] for r in RP.REPLIES}, set(RP.GROUPS))
+check("21 replies, unique ids", (len(ids), len(set(ids))), (21, 21))
+check("4 groups, each used", {r["group"] for r in RP.REPLIES}, set(RP.GROUPS))
 check("the objections from the plan exist",
       {"price_high", "cheaper_elsewhere", "ask_discount", "ask_prices", "will_think"} <= set(ids), True)
 check("every reply has a short and a long version (short < long)",
@@ -54,7 +54,7 @@ check("the four loss categories exist (price / competitor / no reply / postponed
       {"السعر", "معمل تاني", "مش بيرد", "تأجيل لوقتا تاني".replace("لوقتا", "لوقت")} <= set(tr.LOST_SALE_REASONS), True)
 check("«هفكر وأرد» schedules a 24h follow-up by default", (RP.get("will_think")["followup_hours"], RP.get("will_think")["objection"]), (24, "postpone"))
 check("price objection reply says so", ("price" == RP.get("price_high")["objection"], "غالية" in RP.get("price_high")["title"]), (True, True))
-check("group index covers all replies", sum(len(v) for v in RP.by_group().values()), 13)
+check("group index covers all replies", sum(len(v) for v in RP.by_group().values()), len(RP.REPLIES))
 
 # ------------------------------------------------------------
 # 2) بناء الرد
@@ -135,7 +135,7 @@ cfg = cs.default_config()
 cfg["branches"]["Diamond"]["phone"] = "+20 100 000 0001"
 cfg["branches"]["Orange (La Cité)"]["phone"] = "+20 100 000 0002"
 good_secrets = {"gh_events_token": "t", "gh_events_repo": "u/r", "quote_secret": "x" * 32, "access_password": "a",
-                "staff_password": "s", "store_contacts": "true", "discount_limit_pct": "20", "discount_approval_pin": "1234"}
+                "staff_password": "s", "store_contacts": "true", "discount_approval_pin": "1234"}
 good_links = {"app_url": "https://orange.streamlit.app", "review_url": "https://g.page/r/abc", "facebook_page_url": "https://facebook.com/orange"}
 ok_repo = {"ok": True, "private": True, "default_branch": "main", "error": ""}
 checks = sc.run_checks(good_secrets, cfg, good_links, ok_repo, default_phone="+20 100 000 0001", offers_phone="01000000001")

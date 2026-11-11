@@ -2,7 +2,7 @@
 # ============================================================
 #  🧭 شريط تنقّل بين صفحات البرنامج، جوه الصفحة نفسها (Invoice.py بيخفي الـ header وفيه
 #  زرار القايمة الجانبية). صفين: الأساسي (Invoice · Studio · Dashboard · Follow-up ·
-#  Offers) وCRM (Customers · Branches · Gifts). الروابط محمية بـ try/except: صفحة مش
+#  Offers) وCRM (Customers · Branches · Gifts · Replies · Check-in). الروابط محمية بـ try/except: صفحة مش
 #  موجودة أو نسخة Streamlit قديمة ماتوقّفش الصفحة.
 # ============================================================
 
@@ -20,6 +20,7 @@ NAV_MORE = [
     ("pages/6_Branches.py", "📍", "Branches"),
     ("pages/7_Gifts.py", "🎀", "Gifts"),
     ("pages/8_Replies.py", "💬", "Replies"),
+    ("pages/9_Check_In.py", "✅", "Check-in"),
 ]
 NAV_PAGES = NAV_MAIN + NAV_MORE
 

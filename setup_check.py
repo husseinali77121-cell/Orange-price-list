@@ -64,13 +64,24 @@ def run_checks(secrets, cfg: dict, links: dict, store_info: Optional[dict] = Non
                     "store_contacts مفعّل" if contacts else "store_contacts مقفول",
                     "الاسم والرقم بيتخزّنوا — الريبو لازم يفضل Private." if contacts else
                     "الخصوصية أعلى، لكن واتساب المتابعة/VIP/الاسترجاع المباشر مش هيشتغل."))
-    limit = _sec(secrets, "discount_limit_pct")
-    if not limit or float(limit or 0) <= 0:
-        out.append(_chk("warn", "مفيش حد للخصم", "ضيف discount_limit_pct + discount_approval_pin عشان الخصم الكبير يطلب موافقة."))
+    from config_store import discount_limit
+    limit = discount_limit(cfg)
+    if limit <= 0:
+        out.append(_chk("warn", "مفيش حد للخصم", "حدّده من تبويب Policy (الافتراضي 50%)."))
     elif not _sec(secrets, "discount_approval_pin"):
-        out.append(_chk("warn", "حد الخصم من غير كود موافقة", "ضيف discount_approval_pin وإلا هيظهر تحذير بس."))
+        out.append(_chk("warn", f"حد الخصم {limit:.0f}% من غير كود موافقة",
+                        "ضيف discount_approval_pin في Secrets وإلا الخصم الكبير هيظهر تحذير بس من غير ما يقفل الإرسال."))
     else:
-        out.append(_chk("ok", f"حد الخصم {limit}% بكود موافقة"))
+        out.append(_chk("ok", f"حد الخصم {limit:.0f}% — أكبر منه محتاج كود موافقة"))
+    old = _sec(secrets, "discount_limit_pct")
+    if old:
+        try:
+            differs = abs(float(old) - limit) > 1e-9
+        except ValueError:
+            differs = True
+        if differs:
+            out.append(_chk("warn", f"discount_limit_pct = {old} في Secrets مابقاش مستخدم",
+                            f"الحد الفعلي {limit:.0f}% من تبويب Policy — امسح السطر من Secrets عشان مايلخبطش."))
 
     # --- الروابط
     app = links.get("app_url", "")

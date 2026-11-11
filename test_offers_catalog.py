@@ -180,11 +180,14 @@ ITEM = {"uid": "a1", "name": "CBC", "price": 400, "result_days": 1, "collection_
         "category": "HEMATOLOGY", "source": "manual"}
 
 
-def invoice(state=None, secrets=None, clicks=(), typed=None, events=None):
+def invoice(state=None, secrets=None, clicks=(), typed=None, events=None, config=None):
     gh = fs.FakeGitHub()
     gs.requests = gh
     if events:
         gh.put_json(f"events/{month_key()}.json", events)
+    if config is not None:
+        import config_store as _cs
+        gh.put_json(_cs.CONFIG_PATH, config)
     st_ = {"items": [dict(ITEM)], "p_name": "Ahmed Ali Hassan", "p_phone": PHONE}
     st_.update(state or {})
     fake, g = fs.run_script("Invoice.py", state=st_, secrets={**SEC, **(secrets or {})}, clicks=clicks, typed=typed)
@@ -228,13 +231,14 @@ q = [e for e in gh.events() if e["type"] == "quote"]
 check("applied offer is logged on the quote event", (len(q), q[0].get("meta") if q else None, q[0]["total"] if q else None),
       (1, {"offer": "7"}, 2100))
 
-pol = {"discount_limit_pct": 20, "discount_approval_pin": "1234"}
-fake, g, gh = invoice(state={"items": []}, typed={"cat_pick": "7"}, clicks={"cat_apply_7"}, secrets=pol)
+pol = {"discount_approval_pin": "1234"}
+strict = {"policy": {"discount_limit_pct": 20}}          # الإدارة تقدر تشدّد الحد من Policy
+fake, g, gh = invoice(state={"items": []}, typed={"cat_pick": "7"}, clicks={"cat_apply_7"}, secrets=pol, config=strict)
 check("offer discount (25%) is pre-approved even with a 20% policy",
       ([e["type"] for e in gh.events()], "الخصم محتاج موافقة المسؤول" in g["blockers"]), (["quote"], False))
 fake, g, gh = invoice(state={"discount_type": "Percentage", "discount_value": 30.0, "disc_Percentage_0": 30.0},
-                      secrets=pol, typed={"cat_pick": "7"})
-check("a manual 30% discount still needs approval", ([e["type"] for e in gh.events()], "الخصم محتاج موافقة المسؤول" in g["blockers"]),
+                      secrets=pol, typed={"cat_pick": "7"}, config=strict)
+check("a manual 30% discount (> 20% policy) still needs approval", ([e["type"] for e in gh.events()], "الخصم محتاج موافقة المسؤول" in g["blockers"]),
       ([], True))
 
 fake, g, gh = invoice(state={"items": [], "discount_type": "Fixed Amount", "discount_value": 50.0,

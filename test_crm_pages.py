@@ -78,6 +78,8 @@ def wa(fake):
     for c in fake.calls:
         if c[0] == "markdown" and c[1] and "wa.me" in str(c[1][0]):
             urls += re.findall(r'href="(https://wa\.me[^"]+)"', str(c[1][0]))
+        if c[0] == "components.html" and "wa.me" in str(c[1]):     # زرار «إرسال + متابعة» (wa_bridge)
+            urls += re.findall(r'href="(https://wa\.me[^"]+)"', str(c[1]))
     return [unquote(u) for u in urls]
 
 
@@ -165,7 +167,7 @@ payload, miss = rc.build_recovery_payload({**rec, "items": ["CBC", "Ghost Test"]
 check("tests missing from the price list are reported", (miss, len(payload["items"])), (["Ghost Test"], 1))
 
 fake, g, gh = invoice({"items": [], "p_name": "", "p_phone": ""}, query={"q": tok},
-                      secrets={"discount_limit_pct": 5, "discount_approval_pin": "9999"})
+                      secrets={"discount_approval_pin": "9999"}, config={"policy": {"discount_limit_pct": 5}})
 check("opening a recovery quote restores items + parent link", (
     sorted(i["name"] for i in fake.session_state["items"]), fake.session_state["parent_quote"],
     fake.session_state["quote_id"] == data["id"]), (["CBC", "Ferritin"], "L1", True))

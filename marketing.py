@@ -96,21 +96,41 @@ OPTOUT_LINE_AR = "لو مش حابب نتواصل معاك تاني ابعتلن
 
 def build_followup_message(*, lab: str, name: str = "", items=(), total: int = 0,
                            currency: str = "ج.م", attempt: int = 0,
-                           optout_line: bool = True) -> str:
+                           optout_line: bool = True, lead: bool = False, cta: str = "",
+                           code: str = "", home_visit: bool = True) -> str:
     """رسالة متابعة لعرض اتبعت ولسه من غير قرار (صفحة «متابعة النهاردة»).
-    attempt = كام محاولة اتعملت قبل كده (المحاولة الأخيرة بتبقى أخف وأقصر)."""
+    attempt = كام محاولة اتعملت قبل كده — التسلسل: تذكير ودّي ← قيمة (سحب منزلي/حجز سهل) ← آخر
+    تذكير خفيف. lead = استفسار من غير عرض سعر (لسه مستنيين الروشتة/أسماء التحاليل).
+    cta = سطور «للحجز ردّ برقم…» · code = سطر كود العرض."""
     g = _greet(name, "ar")
     names = [str(i) for i in items][:4]
     more = len(list(items)) - len(names)
     what = "، ".join(names) + (f" و{more} تحاليل تانية" if more > 0 else "") if names else ""
     amt = f" بإجمالي {total:,} {currency}" if total else ""
-    if attempt >= 2:
+    if lead:
+        if attempt >= 2:
+            body = "آخر تذكير 🙏 لو لسه محتاج التحاليل ابعتلنا صورة الروشتة وهنرد عليك بالسعر على طول."
+        elif attempt == 1:
+            body = ("حابين نطمّن لو لسه محتاج التحاليل 🍊 ابعتلنا صورة الروشتة أو أسماء التحاليل "
+                    "وهنبعتلك الإجمالي وأي عرض متاح" + (" — والسحب المنزلي متاح حسب الحجز 🏠." if home_visit else "."))
+        else:
+            body = ("بنطمّن على حضرتك 🍊 لو لسه محتاج التحاليل ابعتلنا صورة الروشتة أو أسماء التحاليل "
+                    "وهنرد عليك بالإجمالي وأي عرض متاح.")
+    elif attempt >= 2:
         body = (f"آخر تذكير بخصوص عرض التحاليل{amt} 🙏 "
                 f"لو لسه محتاجه ابعتلنا وهنحجزلك ميعاد مناسب.")
+    elif attempt == 1:
+        body = (f"حابين نسهّلها عليك 🍊 عرض التحاليل" + (f" ({what})" if what else "") + f"{amt} لسه متاح، "
+                + ("وتقدر تعمله في الفرع أو بسحب منزلي من غير مشوار 🏠. " if home_visit else "")
+                + "قولّنا الميعاد اللي يناسبك ونحجزلك ✅")
     else:
         body = (f"بنفكّرك بعرض التحاليل اللي طلبته" + (f" ({what})" if what else "") + f"{amt}. "
                 f"لو حابب تعدّل في التحاليل أو تحجز ميعاد إحنا تحت أمرك ✅")
     parts = [g, f"من {lab}", body]
+    if cta and attempt < 2:
+        parts += ["", cta]
+    if code and not lead:
+        parts.append(code)
     if optout_line:
         parts.append(OPTOUT_LINE_AR)
     return "\n".join(parts)

@@ -48,7 +48,9 @@ LOST_SALE_REASONS = [
 
 EVENT_TYPES = ("quote", "lost_sale", "converted", "campaign", "sent", "followup", "optout",
                "booked", "visited", "recovery_request", "recovery_decision", "gift",
-               "vip_set", "vip_contact", "config_change", "reply")
+               "vip_set", "vip_contact", "config_change", "reply", "lead", "recall_contact")
+
+WHATSAPP_SOURCE = "💬 WhatsApp"
 
 
 # ------------------------------------------------------------
@@ -77,6 +79,11 @@ def make_event(event_type: str, quote_id: str, branch: str = "",
     عميل جديد (meta: gift_type, cost, delivered_by, note). vip_set / vip_contact: بصمة
     العميل (meta.vip / meta.result). config_change: سجل تعديلات إعدادات الإدارة.
     reply: الموظف استخدم رد جاهز (meta: objection, kind, reply, version) — أساس تحليل الاعتراضات.
+    lead: عميل سأل على الواتساب ولسه مفيش عرض سعر (quote_id = LD-…؛ meta.next_due = ميعاد
+          المتابعة) — بيظهر في المتابعة لحد ما يتعمله عرض بنفس البصمة.
+    recall_contact: تذكير تحليل دوري اتبعت (meta: rule, result) — بيمنع التكرار.
+    sent: ممكن يحمل meta.next_due (المتابعة اتجدولت مع الإرسال) و meta.followup_hours.
+    quote: ممكن يحمل meta.inquiry_ts (وقت رسالة العميل) — لحساب سرعة الرد.
     phone_key: بصمة HMAC للموبايل (phone_key()) — بتخلّينا نعرف عميل متكرر/موقوف
                من غير ما نخزّن الرقم نفسه. contact: اسم+رقم — بيتخزّن بس لو
                secrets: store_contacts = true (ولازم الريبو يكون Private).
@@ -155,7 +162,13 @@ def _parse_ts(ts: str) -> Optional[datetime]:
 
 
 _LIFECYCLE = ("quote", "sent", "booked", "visited", "followup", "optout", "converted",
-              "lost_sale", "recovery_request", "recovery_decision", "gift")
+              "lost_sale", "recovery_request", "recovery_decision", "gift", "lead")
+
+
+def new_lead_id(now: Optional[datetime] = None) -> str:
+    """LD-YYMMDD-XXXX — عميل مستفسر من غير عرض سعر لسه."""
+    import secrets as _s
+    return f"LD-{(now or datetime.now()):%y%m%d}-{_s.token_hex(2).upper()}"
 
 
 def quote_records(events: List[dict]) -> Dict[str, dict]:
@@ -176,7 +189,8 @@ def quote_records(events: List[dict]) -> Dict[str, dict]:
             "campaign_id": "", "pk": "", "contact": None, "decision": "", "decision_ts": "",
             "followups": [], "next_due": "", "_nd_ts": "", "optout": False, "staff": "",
             "visit_type": "", "area": "", "benefits": [], "parent": "", "recoveries": [],
-            "recovery": None, "gift": None, "lost_reason": ""})
+            "recovery": None, "gift": None, "lost_reason": "", "is_lead": False, "lead_ts": "",
+            "inquiry_ts": "", "note": "", "no_followup": False})
 
     for e in events:
         q = e.get("quote_id") or ""
@@ -194,11 +208,35 @@ def quote_records(events: List[dict]) -> Dict[str, dict]:
                 r[k] = e[k]
         if e.get("benefits"):
             r["benefits"] = list(e["benefits"])
+        meta = e.get("meta") or {}
         if typ == "quote":
             r.update(quote_ts=ts, branch=e.get("branch", ""), source=e.get("referral_source", ""),
                      total=int(e.get("total", 0)), discount=int(e.get("discount", 0)),
                      items=list(e.get("items", [])), campaign_id=e.get("campaign_id", ""))
+            if meta.get("inquiry_ts"):
+                r["inquiry_ts"] = str(meta["inquiry_ts"])
+        elif typ == "lead":
+            # استفسار من غير عرض: بيدخل المتابعة كأنه «اتبعتله رد» من وقت التسجيل
+            r.update(is_lead=True, lead_ts=ts, branch=r["branch"] or e.get("branch", ""),
+                     source=r["source"] or e.get("referral_source", ""), note=e.get("note", "") or r["note"])
+            if not r["sent_ts"]:
+                r["sent_ts"] = ts
+            if meta.get("inquiry_ts"):
+                r["inquiry_ts"] = str(meta["inquiry_ts"])
+            nd = meta.get("next_due", "")
+            if nd and ts >= r["_nd_ts"]:
+                r["next_due"], r["_nd_ts"] = nd, ts
         elif typ == "sent":
+            nd = meta.get("next_due", "")
+            if nd and ts >= r["_nd_ts"]:          # المتابعة اتجدولت مع الإرسال نفسه
+                r["next_due"], r["_nd_ts"] = nd, ts
+            if "followup_hours" in meta:          # آخر إرسال بيحدد: فيه متابعة ولا لأ
+                r["no_followup"] = int(meta.get("followup_hours") or 0) <= 0
+            if meta.get("inquiry_ts") and not r["inquiry_ts"]:
+                r["inquiry_ts"] = str(meta["inquiry_ts"])
+            src = e.get("referral_source", "")
+            if src and (not r["source"] or r["source"] == "غير محدد"):
+                r["source"] = src                 # المصدر اتحدد بعد ما العرض اتجهّز (لزق محادثة واتساب)
             if not r["sent_ts"] or ts >= r["sent_ts"]:
                 r["sent_ts"] = ts
                 # الأرقام وقت الإرسال هي الأدق (الخصم/الإجمالي ممكن يتغيّر بعد أول quote)
@@ -284,10 +322,19 @@ def followup_queue(events: List[dict], now: Optional[datetime] = None, *,
     now = now or datetime.now()
     opted = optout_keys(events)
     out = {"due": [], "upcoming": [], "exhausted": [], "stale": [], "visit_check": [], "booked": []}
-    for q, r in quote_records(events).items():
+    all_recs = quote_records(events)
+    quoted_pk: Dict[str, str] = {}                 # آخر عرض سعر لكل بصمة (عشان نقفل الـ Lead)
+    for r in all_recs.values():
+        if r["pk"] and r["quote_ts"] and r["quote_ts"] > quoted_pk.get(r["pk"], ""):
+            quoted_pk[r["pk"]] = r["quote_ts"]
+    for q, r in all_recs.items():
         stage = stage_of(r)
         if stage in ("visited", "lost") or r["optout"] or (r["pk"] and r["pk"] in opted):
             continue
+        if r["is_lead"] and not r["quote_ts"] and r["pk"] and quoted_pk.get(r["pk"], "") >= r["lead_ts"]:
+            continue                               # المستفسر اتعمله عرض سعر بعدها — المتابعة على العرض
+        if r["no_followup"] and stage != "booked":
+            continue                               # الموظف اختار «من غير متابعة» وقت الإرسال
         item = dict(r)
         item["attempts"] = len(r["followups"])
         if stage == "booked":
@@ -357,7 +404,8 @@ def customer_profile(events: List[dict], pk: str, vip_after: int = 3) -> dict:
     """
     if not pk:
         return {"label": "New", "quotes": 0, "converted": 0, "revenue": 0, "optout": False}
-    recs = [r for r in quote_records(events).values() if r["pk"] == pk]
+    recs = [r for r in quote_records(events).values() if r["pk"] == pk
+            and not (r["is_lead"] and not r["quote_ts"])]        # الاستفسار لوحده مش «عرض»
     conv = [r for r in recs if r["decision"] == "converted"]
     label = "VIP" if len(conv) >= vip_after else ("Returning" if (len(recs) >= 2 or conv) else "New")
     return {"label": label, "quotes": len(recs), "converted": len(conv),
@@ -582,7 +630,12 @@ def customers(events: List[dict], vip: Optional[dict] = None,
             contacted[pk] = {"ts": e.get("ts", ""), **(e.get("meta") or {})}
     opted = optout_keys(events)
     by_pk: Dict[str, List[dict]] = {}
+    lead_contacts: Dict[str, dict] = {}
     for r in quote_records(events).values():
+        if r["is_lead"] and not r["quote_ts"]:              # الاستفسار: اسم/رقم بس، مش عرض
+            if r["pk"] and r["contact"]:
+                lead_contacts[r["pk"]] = r["contact"]
+            continue
         if r["pk"]:
             by_pk.setdefault(r["pk"], []).append(r)
     out = []
@@ -591,7 +644,8 @@ def customers(events: List[dict], vip: Optional[dict] = None,
         recent = [r for r in visited if r["decision_ts"] >= since]
         spend_recent = sum(r["total"] for r in recent)
         contact = next((r["contact"] for r in sorted(rs, key=lambda x: x["quote_ts"] or x["sent_ts"],
-                                                     reverse=True) if r["contact"]), None) or {}
+                                                     reverse=True) if r["contact"]), None) \
+            or lead_contacts.get(pk) or {}
         m = manual.get(pk)
         if m is not None:
             is_vip = m["vip"]
@@ -768,3 +822,129 @@ def objection_stats(events: List[dict]) -> Dict[str, dict]:
                   "open": len(rs) - visited - len(lost), "visit_rate_pct": _pct(visited, len(rs)),
                   "top_reasons": sorted(reasons.items(), key=lambda x: -x[1])[:3]}
     return out
+
+
+# ------------------------------------------------------------
+# 💬 استفسارات الواتساب: Funnel + سرعة الرد · الاستقبال (Check-in) · ربط الحملة تلقائي
+# ------------------------------------------------------------
+
+RESPONSE_BUCKETS = (("أقل من 15 دقيقة", 15), ("15–60 دقيقة", 60), ("1–3 ساعات", 180),
+                    ("أكتر من 3 ساعات", None))
+
+
+def is_whatsapp(r: dict) -> bool:
+    return bool(r.get("is_lead")) or "whatsapp" in (r.get("source") or "").lower()
+
+
+def whatsapp_funnel(events: List[dict]) -> dict:
+    """
+    رحلة عميل الواتساب: استفسار (lead) ← عرض سعر ← اتبعت ← حجز ← حضر | فات.
+      leads · leads_quoted (المستفسر اتعمله عرض بعدها بنفس البصمة) · quotes · sent · booked ·
+      visited · lost · open · visit_rate_pct (حضروا ÷ اتبعتلهم) · quote_rate_pct ·
+      median_response_min (من رسالة العميل لحد الإرسال) · by_response [{bucket, sent, visited, rate}]
+    """
+    recs = quote_records(events)
+    quoted_pk: Dict[str, List[str]] = {}
+    for r in recs.values():
+        if r["pk"] and r["quote_ts"]:
+            quoted_pk.setdefault(r["pk"], []).append(r["quote_ts"])
+    wa = [r for r in recs.values() if is_whatsapp(r)]
+    leads = [r for r in wa if r["is_lead"] and not r["quote_ts"]]
+    leads_quoted = sum(1 for r in leads if r["pk"] and any(t >= r["lead_ts"] for t in quoted_pk.get(r["pk"], [])))
+    quotes = [r for r in wa if r["quote_ts"]]
+    sent = [r for r in quotes if r["sent_ts"]]
+    st_ = {r["quote_id"]: stage_of(r) for r in quotes}
+    visited = [r for r in quotes if st_[r["quote_id"]] == "visited"]
+    lost = [r for r in quotes if st_[r["quote_id"]] == "lost"]
+    booked = [r for r in quotes if r["booked_ts"]]
+    resp, buckets = [], {b[0]: {"bucket": b[0], "sent": 0, "visited": 0} for b in RESPONSE_BUCKETS}
+    for r in sent:
+        a, b = _parse_ts(r["inquiry_ts"]) if r["inquiry_ts"] else None, _parse_ts(r["sent_ts"])
+        if not a or not b or b < a:
+            continue
+        mins = (b - a).total_seconds() / 60.0
+        resp.append(mins)
+        label = next(lbl for lbl, lim in RESPONSE_BUCKETS if lim is None or mins < lim)
+        buckets[label]["sent"] += 1
+        buckets[label]["visited"] += 1 if st_[r["quote_id"]] == "visited" else 0
+    resp.sort()
+    median = None
+    if resp:
+        m = len(resp) // 2
+        median = round(resp[m] if len(resp) % 2 else (resp[m - 1] + resp[m]) / 2, 1)
+    by_resp = []
+    for lbl, _ in RESPONSE_BUCKETS:
+        b = buckets[lbl]
+        if b["sent"]:
+            by_resp.append({**b, "rate": _pct(b["visited"], b["sent"])})
+    sent_visited = sum(1 for r in sent if st_[r["quote_id"]] == "visited")
+    return {
+        "leads": len(leads), "leads_quoted": leads_quoted, "quotes": len(quotes), "sent": len(sent),
+        "booked": len(booked), "visited": len(visited), "lost": len(lost),
+        "open": len(quotes) - len(visited) - len(lost),
+        "visit_rate_pct": _pct(sent_visited, len(sent)),
+        "quote_rate_pct": _pct(leads_quoted, len(leads)),
+        "value_visited": sum(r["total"] for r in visited),
+        "median_response_min": median, "by_response": by_resp,
+    }
+
+
+def open_quotes_for(events: List[dict], *, pk: str = "", code: str = "",
+                    now: Optional[datetime] = None, days: int = 45) -> List[dict]:
+    """
+    الاستقبال: العميل وصل — عروضه المفتوحة (لسه ماحضرش ولا فات) بالبصمة أو بكود العرض.
+    الأحدث الأول. الاستفسار لوحده (lead من غير عرض) مش بيظهر هنا.
+    """
+    now = now or datetime.now()
+    since = (now - timedelta(days=days)).isoformat(timespec="seconds")
+    code = (code or "").strip().upper()
+    out = []
+    for r in quote_records(events).values():
+        if r["is_lead"] and not r["quote_ts"]:
+            continue
+        if not ((pk and r["pk"] == pk) or (code and r["quote_id"].upper() == code)):
+            continue
+        if stage_of(r) not in ("new", "sent", "booked"):
+            continue
+        if max(r["quote_ts"], r["sent_ts"], r["booked_ts"]) < since:
+            continue
+        out.append(r)
+    out.sort(key=lambda r: max(r["quote_ts"], r["sent_ts"], r["booked_ts"]), reverse=True)
+    return out
+
+
+def appointments(events: List[dict], day=None, *, overdue_days: int = 7) -> dict:
+    """
+    مواعيد الاستقبال: today = حجوزات ميعادها النهاردة (مرتّبة بالساعة) ·
+    overdue = حجوزات ميعادها عدّى (لحد overdue_days) ولسه محدّش سجّل حضر/ماحضرش.
+    """
+    from datetime import date as _date
+    day = day or _date.today()
+    lo = (day - timedelta(days=overdue_days)).isoformat()
+    out = {"today": [], "overdue": []}
+    for r in quote_records(events).values():
+        if stage_of(r) != "booked" or not r["appointment"]:
+            continue
+        d = r["appointment"][:10]
+        if d == day.isoformat():
+            out["today"].append(r)
+        elif lo <= d < day.isoformat():
+            out["overdue"].append(r)
+    for k in out:
+        out[k].sort(key=lambda r: r["appointment"])
+    return out
+
+
+def last_campaign_for(events: List[dict], pk: str, *, now: Optional[datetime] = None,
+                      days: int = 14) -> str:
+    """كود آخر إعلان اتبعت للعميل ده من الاستوديو (campaign event بنفس البصمة) خلال days يوم."""
+    if not pk:
+        return ""
+    now = now or datetime.now()
+    since = (now - timedelta(days=days)).isoformat(timespec="seconds")
+    best = ("", "")
+    for e in events:
+        if e.get("type") == "campaign" and e.get("pk") == pk and e.get("ts", "") >= since:
+            if e.get("ts", "") >= best[0]:
+                best = (e.get("ts", ""), e.get("quote_id", ""))
+    return best[1]

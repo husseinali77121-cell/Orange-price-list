@@ -61,8 +61,13 @@ from price_utils import (MATCH_ALIAS, MATCH_AMBIGUOUS, MATCH_EXACT,
                          reprice_saved_items, resolve_test, search_tests,
                          suggest_bundle_offers,
                          validate_patient_name, validate_phone)
-from tracking import (LOST_SALE_REASONS, REFERRAL_SOURCES, customer_profile,
-                      make_event, month_key, phone_key, summarize_events)
+from tracking import (LOST_SALE_REASONS, REFERRAL_SOURCES, WHATSAPP_SOURCE, customer_profile,
+                      last_campaign_for, make_event, month_key, new_lead_id, phone_key,
+                      summarize_events)
+import replies as RP
+import wa_inquiry as WI
+from patient_prep import eta_text, prep_block
+from wa_bridge import BRIDGE_ARIA, BRIDGE_CSS, make_token, parse_token, send_button_html
 import campaigns as CP
 import config_store
 import offer_matcher as OM
@@ -146,7 +151,7 @@ def _secret_str(key: str) -> str:
 
 QUOTE_TTL_HOURS = secret_float(st.secrets, "quote_ttl_hours", 48) or 48   # لينك العرض بيقفل بعدها
 STORE_CONTACTS = secret_bool(st.secrets, "store_contacts")              # تخزين اسم/رقم في «تم الإرسال»
-DISCOUNT_LIMIT_PCT = secret_float(st.secrets, "discount_limit_pct", 0)  # 0 = مفيش حد
+# حد الخصم بقى من الإعدادات (Branches ← Policy) — الافتراضي 50% (كان 20% في Secrets)
 DISCOUNT_PIN = _secret_str("discount_approval_pin")                     # كود موافقة المسؤول
 CAMPAIGN_RE = re.compile(r"^OL-\d{6}-[A-Z0-9]{4}$")
 
@@ -243,6 +248,9 @@ DEFAULTS = {
     "area": "",               # منطقة العميل (لحملات المزايا زي الزيارة المجانية)
     "visit_type": "lab",      # lab | home
     "parent_quote": "",       # عرض قديم اتعمل منه الجديد (استرجاع عميل بموافقة الإدارة)
+    "inquiry_ts": "",         # وقت رسالة العميل على الواتساب (من المحادثة الملزوقة) — لسرعة الرد
+    "bridge_gen": 0,          # بيتغيّر عشان خانة جسر «إرسال + متابعة» تتفضّى
+    "bulk_src": "",           # "wa" = القائمة جاية من استفسار واتساب (المراجعة بتظهر جوه صندوقه)
 }
 for k, v in DEFAULTS.items():
     st.session_state.setdefault(k, v)
@@ -426,6 +434,53 @@ def flash_panel_result(p, added, dup, covered, deferred=()):
               f"موجودة في الفاتورة. ضيفها من خانة البحث عشان تشوف الاستبدال")
 
 
+def bulk_review(BULK):
+    """مراجعة قائمة تحاليل (ملزوقة / من الصوت / من استفسار واتساب): المؤكد متعلّم، والمشكوك فيه بيتختار."""
+    st.caption(f"مؤكد {len(BULK['confident'])}  ·  محتاج اختيار "
+               f"{len(BULK['choose'])}  ·  مش متعرف عليه "
+               f"{len(BULK['missing'])}")
+    chosen = []
+
+    if BULK["confident"]:
+        st.markdown("**✅ اتعرف عليها — شيل علامة أي حاجة مش عايزها**")
+        for i, (t, rec) in enumerate(BULK["confident"]):
+            tag = " 📦" if rec.is_bundle else ""
+            lbl = f"{rec.name}{tag} — {rec.price:,} {CURRENCY}"
+            if t.strip().lower() != rec.name.lower():
+                lbl += f"   ‹ {t}"
+            if st.checkbox(lbl, value=True, key=f"bulk_ok_{i}"):
+                chosen.append(rec)
+
+    if BULK["choose"]:
+        st.markdown("**🔎 محتاجة تحديد منك**")
+        for i, (t, cands, why) in enumerate(BULK["choose"]):
+            opts = ["— تجاهل —"] + [f"{c.name} · {c.price:,}" for c in cands]
+            pick = st.selectbox(f"«{t}» — {why}", opts, key=f"bulk_pick_{i}")
+            if pick != opts[0]:
+                chosen.append(cands[opts.index(pick) - 1])
+
+    if BULK["missing"]:
+        st.markdown("**⛔ مش لاقيلها مقابل — ضيفها يدوي من خانة البحث**")
+        st.code("\n".join(BULK["missing"]), language=None)
+
+    g1, g2 = st.columns(2)
+    with g1:
+        if st.button(f"➕ أضف المختار ({len(chosen)})",
+                     use_container_width=True, type="primary",
+                     disabled=not chosen, key="bulk_add"):
+            wa = st.session_state.get("bulk_src") == "wa"
+            res4 = add_many(chosen, "whatsapp" if wa else "bulk")
+            flash_panel_result("استفسار الواتساب" if wa else "القائمة الملزوقة", *res4)
+            st.session_state.bulk = None
+            st.session_state.bulk_src = ""
+            st.rerun()
+    with g2:
+        if st.button("🗑️ امسح القائمة", use_container_width=True, key="bulk_clear"):
+            st.session_state.bulk = None
+            st.session_state.bulk_src = ""
+            st.rerun()
+
+
 # ------------------------------------------------------------
 
 with st.sidebar:
@@ -475,6 +530,137 @@ st.session_state.flash = []
 
 
 # ------------------------------------------------------------
+# 0) 💬 استفسار واتساب — الموظف يلزق المحادثة: الاسم والرقم والتحاليل والمنطقة ونية العميل
+#    بيتملوا لوحدهم، والمصدر بيبقى WhatsApp، ووقت الرسالة بيتسجّل (سرعة الرد في الداشبورد).
+#    التحاليل بتروح لمراجعة سريعة (المؤكد متعلّم) — نفس قاعدة «مفيش تخمين».
+# ------------------------------------------------------------
+
+CFG = load_config()
+DISCOUNT_LIMIT_PCT = config_store.discount_limit(CFG)    # 50% افتراضي — Branches ← Policy
+_BRANCH_NAMES = [(CFG["branches"].get(b) or {}).get("name_ar", b) for b in BRANCHES]
+_BUNDLE_COMPONENTS = {b["name"]: list(b.get("components", [])) for b in BUNDLE_DEFS}
+
+
+def _local_phone(e164: str) -> str:
+    return "0" + e164[2:] if e164.startswith("20") and len(e164) == 12 else "+" + e164
+
+
+with st.expander("💬 استفسار واتساب — الصق المحادثة (الاسم والرقم والتحاليل بيتملوا لوحدهم)",
+                 expanded=not st.session_state["items"] or st.session_state.get("bulk_src") == "wa"):
+    with st.form("wa_form", clear_on_submit=True):
+        wa_raw = st.text_area(
+            "محادثة العميل", height=110, label_visibility="collapsed", key="wa_raw",
+            placeholder="انسخ رسايل العميل من الواتساب والزقها هنا زي ما هي:\n"
+                        "[10:15, 11/11/2026] Mona Ahmed: بكام صورة دم وفيتامين د؟ أنا في زايد وعايزة سحب منزلي")
+        wa_go = st.form_submit_button("⚡ حلّل الاستفسار", use_container_width=True, type="primary")
+    if wa_go and (wa_raw or "").strip():
+        A = WI.analyze_inquiry(wa_raw, IDX, areas=CFG["areas"])
+        got = []
+        if A["name"] and not st.session_state.p_name.strip():
+            st.session_state.p_name = A["name"]
+            got.append(f"الاسم: {A['name']}")
+        if A["phone"] and not st.session_state.p_phone.strip():
+            st.session_state.p_phone = _local_phone(A["phone"])
+            got.append("الرقم")
+        if st.session_state.referral_source == REFERRAL_SOURCES[-1] and WHATSAPP_SOURCE in REFERRAL_SOURCES:
+            st.session_state.referral_source = WHATSAPP_SOURCE
+            got.append("المصدر: واتساب")
+        if A["home_visit"] and st.session_state.visit_type != "home":
+            st.session_state.visit_type = "home"
+            got.append("🏠 زيارة منزلية")
+        if A["area"] and not st.session_state.area:
+            st.session_state.area = A["area"]
+            got.append(f"المنطقة: {A['area']}")
+        if A["inquiry_ts"]:
+            st.session_state.inquiry_ts = A["inquiry_ts"].isoformat(timespec="seconds")
+        T = A["tests"]
+        n_t = len(T["confident"]) + len(T["choose"])
+        if n_t or T["missing"]:
+            st.session_state.bulk = T
+            st.session_state.bulk_src = "wa"
+        if A["offer_no"] and HAS_CATALOG and OC.get(str(A["offer_no"])):
+            st.session_state["cat_pick"] = str(A["offer_no"])
+            got.append(f"العميل كتب رقم العرض {A['offer_no']} (افتح «عروض المعمل بالرقم»)")
+        st.session_state["_wa_last"] = {"intents": A["intents"], "text": A["customer_text"][:1500],
+                                        "has_media": A["has_media"], "tests": n_t}
+        if n_t:
+            got.append(f"{n_t} تحليل للمراجعة تحت")
+        flash("success" if got else "info",
+              "💬 " + (" · ".join(got) if got else "مفيش تحاليل في الرسالة — شوف الرد المقترح"))
+        st.rerun()
+
+    if st.session_state.get("bulk_src") == "wa" and st.session_state.bulk:
+        st.markdown("**🧪 التحاليل اللي في رسالة العميل**")
+        bulk_review(st.session_state.bulk)
+
+    _W = st.session_state.get("_wa_last")
+    if _W:
+        if _W["has_media"] and not _W["tests"]:
+            st.info("📎 العميل بعت صورة (غالباً روشتة) — افتحها وضيف التحاليل بالبحث أو الصوت أو «الصق قائمة».")
+        _sugs = RP.suggested(_W["intents"])
+        if _sugs:
+            st.markdown("**💬 الرد المقترح** — " + " · ".join(f"«{x['keyword']}»" for x in _W["intents"][:4]))
+            _rid = st.radio("الرد", [t["id"] for t in _sugs], horizontal=True, key="wa_sug",
+                            format_func=lambda i: RP.get(i)["title"], label_visibility="collapsed")
+            _tpl = RP.get(_rid) or _sugs[0]
+            _its = st.session_state["items"]
+            _tn = compute_totals(_its, st.session_state.discount_value, st.session_state.discount_type)
+            _bi = CFG["branches"].get(st.session_state.branch)
+            _names = [i["name"] for i in _its]
+            _txt0 = RP.render_reply(
+                _tpl, "short", name=st.session_state.p_name, lab=LAB_NAME_AR,
+                branch_text=config_store.branch_block(_bi) if (_bi and "{branch}" in _tpl["short"]) else "",
+                quote_text=RP.quote_block(_names, _tn["total"], discount=_tn["discount"]) if _its else "",
+                prep_text=prep_block(_names, _BUNDLE_COMPONENTS) if _its else "",
+                eta_text=eta_text([i.get("result_days") for i in _its]),
+                cta_text=RP.booking_cta(_BRANCH_NAMES) if _its else "")
+            _rtxt = st.text_area("نص الرد (تقدر تعدّله)", value=_txt0, height=150,
+                                 key=f"wa_rtxt_{_tpl['id']}_{len(_its)}_{_tn['total']}")
+            _rp = validate_phone(st.session_state.p_phone) if st.session_state.p_phone.strip() else None
+            _ra, _rb = st.columns(2)
+            _ra.link_button("📲 ابعت الرد ده", share_url(_rtxt, _rp.value if (_rp and _rp.ok) else ""),
+                            use_container_width=True)
+            if _rb.button("💬 افتح في Replies", key="wa_to_replies", use_container_width=True):
+                st.session_state["_rp_prefill"] = {"rp_name": st.session_state.p_name,
+                                                   "rp_phone": st.session_state.p_phone,
+                                                   "rp_reply": _tpl["id"], "rp_msg": _W["text"]}
+                if hasattr(st, "switch_page"):
+                    st.switch_page("pages/8_Replies.py")
+
+        # العميل سأل ومابعتش تحاليل لسه: سجّله «مستفسر» عشان مايضيعش (بيظهر في Follow-up)
+        _lp = validate_phone(st.session_state.p_phone) if st.session_state.p_phone.strip() else None
+        if not st.session_state["items"] and _lp and _lp.ok and get_event_store():
+            _lk = f"_lead_{_lp.value}"
+            _fh = config_store.followup_hours(CFG) or 24
+            if st.session_state.get(_lk):
+                st.caption("🟡 اتسجّل كمستفسر — هيظهر في Follow-up لو مارجعش بالروشتة، وبيتقفل لوحده لما تعمله عرض.")
+            elif st.button(f"🟡 سجّل كمستفسر + متابعة بعد {_fh} ساعة (لو مابعتش الروشتة)", key="wa_lead",
+                           use_container_width=True):
+                try:
+                    _nm = validate_patient_name(st.session_state.p_name)
+                    get_event_store().append(events_path(month_key()), make_event(
+                        "lead", new_lead_id(), branch=st.session_state.branch,
+                        referral_source=WHATSAPP_SOURCE, phone_key=phone_key(_lp.value, QUOTE_SECRET),
+                        contact=({"name": _nm.value if _nm.ok else "", "phone": _lp.value} if STORE_CONTACTS else None),
+                        staff=st.session_state.staff_name, visit_type=st.session_state.visit_type,
+                        area=st.session_state.area,
+                        note=", ".join(x["intent"] for x in _W["intents"])[:80],
+                        meta={"next_due": (datetime.now() + timedelta(hours=_fh)).isoformat(timespec="seconds"),
+                              **({"inquiry_ts": st.session_state.inquiry_ts} if st.session_state.inquiry_ts else {})}))
+                    st.session_state[_lk] = True
+                    flash("success", "🟡 اتسجّل كمستفسر — المتابعة هتظهر في Follow-up في ميعادها")
+                except GithubStoreError as e:
+                    flash("error", f"مقدرتش أسجّل: {e}")
+                st.rerun()
+        if st.button("✖️ اقفل الاستفسار", key="wa_close"):
+            st.session_state["_wa_last"] = None
+            if st.session_state.get("bulk_src") == "wa":
+                st.session_state.bulk, st.session_state.bulk_src = None, ""
+            st.rerun()
+
+
+
+# ------------------------------------------------------------
 # 1) Patient info + validation
 # ------------------------------------------------------------
 
@@ -503,7 +689,6 @@ CAMPAIGN = st.session_state.campaign_id if CAMPAIGN_RE.match(st.session_state.ca
 if st.session_state.campaign_id and not CAMPAIGN:
     st.caption("⚠️ الشكل المتوقع للكود: OL-YYMMDD-XXXX — مش هيتسجّل بالشكل ده")
 
-CFG = load_config()
 LINKS = config_store.resolve_links(CFG, st.secrets)       # لينكات قابلة للتعديل من صفحة Branches ← Links
 APP_URL = LINKS["app_url"] or APP_URL
 REVIEW_URL = LINKS["review_url"] or REVIEW_URL
@@ -529,6 +714,16 @@ name_chk = validate_patient_name(st.session_state.p_name)
 phone_chk = validate_phone(st.session_state.p_phone)
 PK = phone_key(phone_chk.value, QUOTE_SECRET) if phone_chk.ok else ""
 CUSTOMER = customer_profile(recent_events(), PK) if PK else None
+
+# 🎯 العميل وصله إعلان من الاستوديو خلال 14 يوم ← كود الحملة بيتربط تلقائي (مرة واحدة لكل عرض)
+_ak = f"_camp_auto_{st.session_state.quote_id}"
+if PK and not CAMPAIGN and not st.session_state.get(_ak):
+    st.session_state[_ak] = True
+    _cid = last_campaign_for(recent_events(), PK)
+    if _cid and CAMPAIGN_RE.match(_cid):
+        st.session_state.campaign_id = CAMPAIGN = _cid
+        flash("info", f"🎯 العميل ده وصله إعلان {_cid} من الاستوديو — اتربط بالعرض تلقائي "
+                      "(تقدر تمسحه من خانة «كود الحملة»)")
 
 v1, v2 = st.columns(2)
 with v1:
@@ -783,6 +978,7 @@ if vtxt.strip():
         flash_panel_result("الأمر الصوتي", [], _d, _c, _df)
     if _choose or _missing:
         st.session_state.bulk = {"confident": [], "choose": _choose, "missing": _missing}
+        st.session_state.bulk_src = ""
         flash("warning", "🎤 في اسم محتاج تأكيدك — راجعه تحت في «الصق قائمة»")
     if not _parts:
         flash("warning", "🎤 مسمعتش اسم تحليل واضح — جرّب تاني")
@@ -792,7 +988,8 @@ if vtxt.strip():
 # ---- لصق قائمة تحاليل من رسالة العميل ----
 BULK = st.session_state.bulk
 
-with st.expander("📋 الصق قائمة تحاليل (من رسالة عميل)", expanded=bool(BULK)):
+with st.expander("📋 الصق قائمة تحاليل (من رسالة عميل)",
+                 expanded=bool(BULK) and st.session_state.get("bulk_src") != "wa"):
     with st.form("bulk_form"):
         raw = st.text_area(
             "الزق النص هنا", height=130, label_visibility="collapsed",
@@ -814,51 +1011,13 @@ with st.expander("📋 الصق قائمة تحاليل (من رسالة عمي�
                 missing.append(t)
         st.session_state.bulk = {"confident": conf, "choose": choose,
                                  "missing": missing}
+        st.session_state.bulk_src = ""
         if not toks:
             flash("warning", "مفيش أي سطر صالح في النص ده")
         st.rerun()
 
-    if BULK:
-        st.caption(f"مؤكد {len(BULK['confident'])}  ·  محتاج اختيار "
-                   f"{len(BULK['choose'])}  ·  مش متعرف عليه "
-                   f"{len(BULK['missing'])}")
-        chosen = []
-
-        if BULK["confident"]:
-            st.markdown("**✅ اتعرف عليها — شيل علامة أي حاجة مش عايزها**")
-            for i, (t, rec) in enumerate(BULK["confident"]):
-                tag = " 📦" if rec.is_bundle else ""
-                lbl = f"{rec.name}{tag} — {rec.price:,} {CURRENCY}"
-                if t.strip().lower() != rec.name.lower():
-                    lbl += f"   ‹ {t}"
-                if st.checkbox(lbl, value=True, key=f"bulk_ok_{i}"):
-                    chosen.append(rec)
-
-        if BULK["choose"]:
-            st.markdown("**🔎 محتاجة تحديد منك**")
-            for i, (t, cands, why) in enumerate(BULK["choose"]):
-                opts = ["— تجاهل —"] + [f"{c.name} · {c.price:,}" for c in cands]
-                pick = st.selectbox(f"«{t}» — {why}", opts, key=f"bulk_pick_{i}")
-                if pick != opts[0]:
-                    chosen.append(cands[opts.index(pick) - 1])
-
-        if BULK["missing"]:
-            st.markdown("**⛔ مش لاقيلها مقابل — ضيفها يدوي من خانة البحث**")
-            st.code("\n".join(BULK["missing"]), language=None)
-
-        g1, g2 = st.columns(2)
-        with g1:
-            if st.button(f"➕ أضف المختار ({len(chosen)})",
-                         use_container_width=True, type="primary",
-                         disabled=not chosen):
-                res4 = add_many(chosen, "bulk")
-                flash_panel_result("القائمة الملزوقة", *res4)
-                st.session_state.bulk = None
-                st.rerun()
-        with g2:
-            if st.button("🗑️ امسح القائمة", use_container_width=True):
-                st.session_state.bulk = None
-                st.rerun()
+    if BULK and st.session_state.get("bulk_src") != "wa":
+        bulk_review(BULK)
 
 # تصفح بالقسم
 with st.expander("📂 تصفّح حسب القسم"):
@@ -1069,26 +1228,65 @@ _fhv_on = any(r["eligible"] for r in FHV_RES) and st.toggle(
 FHV_IDS = CP.benefit_ids(FHV_RES) if _fhv_on else []
 _BINFO = CFG["branches"].get(st.session_state.branch)
 _branch_on = bool(_BINFO) and st.toggle("📍 إرفاق عنوان ومواعيد الفرع مع العرض", value=True, key="wa_branch_info")
+_t1, _t2, _t3 = st.columns(3)
+_cta_on = _t1.toggle("✅ طريقة الحجز", value=True, key="wa_cta",
+                     help="«للحجز ردّ برقم: 1 لاسيتيه · 2 دياموند · 3 سحب منزلي» — العميل يرد برقم بدل ما يفكّر")
+_code_on = _t2.toggle("🔖 كود العرض", value=True, key="wa_code",
+                      help="العميل يذكره عند الحضور ← الاستقبال يلاقي العرض في Check-in ويسجّل الحضور")
+_prep_on = _t3.toggle("🧪 تعليمات التحضير", value=True, key="wa_prep",
+                      help="صيام/ميعاد السحب للتحاليل اللي محتاجة (من patient_prep.py)")
+_PREP_TXT = prep_block([i["name"] for i in items], _BUNDLE_COMPONENTS) if (items and _prep_on) else ""
 
 
-def _msg(compact: bool) -> str:
+# الرسالة بتتبني بمستويات: لو لينك واتساب طويل، بنختصر الأقل أهمية الأول (عنوان الفرع الكامل ←
+# تعليمات العينة ← التحضير ← طريقة الحجز) — الإجمالي والكود وخريطة الفرع بيفضلوا لآخر لحظة.
+#   level: (رسالة كاملة؟, التحضير, طريقة الحجز: full/short/none, الفرع كامل؟, الكود كامل؟)
+_LEVELS = [(True, True, "full", True, True), (True, True, "full", False, True),
+           (False, True, "full", False, True), (False, False, "short", False, False),
+           (False, False, "none", False, False), (False, False, "none", False, False)]
+
+
+def _msg(level) -> str:
+    full, with_prep, cta, branch_full, code_full = _LEVELS[min(int(level), len(_LEVELS) - 1)]
     base = build_whatsapp_message(
         items, totals, name_chk.value if name_chk.ok else st.session_state.p_name,
         lab_name=LAB_NAME_AR, doctor=st.session_state.p_doctor,
         invoice_date=st.session_state.p_date.strftime("%d-%m-%Y"),
-        currency=CURRENCY, lang=st.session_state.wa_lang, compact=compact)
+        currency=CURRENCY, lang=st.session_state.wa_lang, compact=not full)
     extra = []
+    ar = st.session_state.wa_lang != "en"
+    last = int(level) >= len(_LEVELS) - 1
+    if _PREP_TXT and ar and with_prep:
+        extra.append(_PREP_TXT)
     if FHV_IDS:
         extra.append(CP.benefit_text(FHV_RES, "en" if st.session_state.wa_lang == "en" else "ar"))
-    if _branch_on:
-        extra.append(config_store.branch_block(_BINFO, compact=compact))
+    if _cta_on and ar and cta == "full":
+        extra.append(RP.booking_cta(_BRANCH_NAMES))
+    elif _cta_on and ar and cta == "short":
+        extra.append("✅ للحجز ردّ: " + " · ".join(f"{i + 1} {n}" for i, n in enumerate(_BRANCH_NAMES[:2] + ["سحب منزلي"])))
+    if _branch_on and not last:
+        extra.append(config_store.branch_block(_BINFO, compact=not branch_full))
+    if _code_on:
+        extra.append(RP.code_line(st.session_state.quote_id) if (code_full and ar) else f"🔖 {st.session_state.quote_id}")
     return base + ("\n\n" + "\n\n".join(extra) if extra else "")
 
 
-wa_url, wa_msg, wa_note = build_whatsapp_link_safe(
-    phone_chk.value if phone_chk.ok else "", _msg)
+_wa_phone = phone_chk.value if phone_chk.ok else ""
+wa_note, WA_LEVEL = "", 0
+for WA_LEVEL in range(len(_LEVELS)):
+    wa_msg = _msg(WA_LEVEL)
+    wa_url = build_whatsapp_url(_wa_phone, wa_msg)
+    if len(wa_url) <= MAX_WA_URL:
+        break
+else:
+    wa_note = "⚠️ الفاتورة كبيرة جداً على لينك واتساب — استخدم PDF أو انسخ الرسالة يدوي"
+if not wa_note and WA_LEVEL >= 3:
+    wa_note = "الرسالة طويلة — اتختصرت (التحضير/طريقة الحجز) عشان لينك واتساب يشتغل"
 if wa_note and items:
-    st.warning(wa_note)
+    if "كبيرة" in wa_note:
+        st.warning(wa_note)
+    else:
+        st.caption("ℹ️ " + wa_note)
 
 # ---- سياسة الخصم: أكبر من الحد = موافقة المسؤول بكود (secrets: discount_limit_pct + discount_approval_pin)
 _limit_hit = bool(items) and needs_approval(totals, DISCOUNT_LIMIT_PCT)
@@ -1139,11 +1337,51 @@ if not blockers:
                     staff=st.session_state.staff_name, visit_type=st.session_state.visit_type,
                     area=st.session_state.area, benefits=FHV_IDS,
                     parent=st.session_state.parent_quote,
-                    meta=({"approved": True} if _approved and _limit_hit and not _offer_ok else None)
-                    or ({"offer": st.session_state["_offer_id"]} if _offer_ok else None)))
+                    meta=({"approved": True} if _approved and _limit_hit and not _offer_ok else {})
+                    | ({"offer": st.session_state["_offer_id"]} if _offer_ok else {})
+                    | ({"inquiry_ts": st.session_state.inquiry_ts} if st.session_state.inquiry_ts else {})
+                    or None))
             except GithubStoreError:
                 pass  # التتبّع مش أولوية أعلى من إتمام الفاتورة نفسها
         st.session_state[_log_key] = True
+
+FU_OPTIONS = [3, 6, 24, 48, 72, 0]
+FU_LABELS = {0: "من غير متابعة", 3: "بعد 3 ساعات", 6: "بعد 6 ساعات", 24: "بكرة (24 ساعة)",
+             48: "بعد يومين", 72: "بعد 3 أيام"}
+_sent_key = f"_sent_{st.session_state.quote_id}"
+
+
+def log_sent(via: str) -> bool:
+    """«اتبعت» + ميعاد المتابعة في حدث واحد — أساس قايمة المتابعة وتأكيد الحضور."""
+    _store = get_event_store()
+    if not _store:
+        flash("warning", "تتبّع العروض مش متظبط في الإعدادات (secrets)")
+        return False
+    fh = int(st.session_state.get("fu_hours", 24) or 0)
+    due = (datetime.now() + timedelta(hours=fh)).isoformat(timespec="seconds") if fh else ""
+    try:
+        _contact = ({"name": name_chk.value, "phone": phone_chk.value}
+                    if STORE_CONTACTS and name_chk.ok else None)
+        _store.append(events_path(month_key()), make_event(
+            "sent", st.session_state.quote_id, branch=st.session_state.branch,
+            referral_source=st.session_state.referral_source,
+            total=totals["total"], count=totals["count"],
+            items=[i["name"] for i in items], discount=totals["discount"],
+            campaign_id=CAMPAIGN, phone_key=PK, contact=_contact,
+            staff=st.session_state.staff_name, visit_type=st.session_state.visit_type,
+            area=st.session_state.area, benefits=FHV_IDS,
+            parent=st.session_state.parent_quote,
+            meta={"followup_hours": fh, "via": via, **({"next_due": due} if due else {}),
+                  **({"inquiry_ts": st.session_state.inquiry_ts} if st.session_state.inquiry_ts else {})}))
+        st.session_state[_sent_key] = due or "none"
+        flash("success", "✅ اتسجّل إن العرض اتبعت" + (
+            f" — المتابعة {FU_LABELS[fh]} في «Follow-up» لو العميل ماردّش، والحضور بيتأكد من «Check-in»"
+            if fh else " (من غير متابعة)"))
+        return True
+    except GithubStoreError as e:
+        flash("error", f"مقدرتش أسجّل الإرسال: {e}")
+        return False
+
 
 s1, s2, s3 = st.columns(3)
 
@@ -1151,6 +1389,32 @@ with s1:
     if blockers:
         st.button("📲 إرسال واتساب", disabled=True, use_container_width=True)
         st.caption("مقفول: " + " · ".join(blockers))
+    elif get_event_store():
+        # ضغطة واحدة: بتفتح واتساب العميل وبتسجّل «اتبعت» + ميعاد المتابعة (جسر wa_bridge)
+        st.session_state.setdefault("fu_hours", config_store.followup_hours(CFG))
+        if st.session_state.fu_hours not in FU_OPTIONS:
+            st.session_state.fu_hours = 24
+        st.selectbox("⏰ المتابعة لو ماردّش", FU_OPTIONS, key="fu_hours", format_func=lambda h: FU_LABELS[h])
+        st.markdown(BRIDGE_CSS, unsafe_allow_html=True)
+        _bv = st.text_input(BRIDGE_ARIA, key=f"wa_bridge_{st.session_state.bridge_gen}",
+                            label_visibility="collapsed")
+        _tok = parse_token(_bv)
+        if _tok:
+            st.session_state.bridge_gen += 1
+            if _tok == ("sent", st.session_state.quote_id) and not st.session_state.get(_sent_key):
+                log_sent("one_tap")
+            st.rerun()
+        _done = st.session_state.get(_sent_key)
+        components.html(send_button_html(
+            wa_url, f"📲 إرسال لـ \u2066{format_phone_display(phone_chk.value)}\u2069" + ("" if _done else " + متابعة"),
+            make_token("sent", st.session_state.quote_id),
+            hint="" if _done else "بيفتح واتساب ويسجّل الإرسال والمتابعة مع بعض"), height=82)
+        if _done:
+            st.caption("✔ اتسجّل إن العرض اتبعت" + (
+                f" — المتابعة: {datetime.fromisoformat(_done):%d-%m %H:%M}" if _done != "none" else " (من غير متابعة)"))
+        elif st.button("✅ تم الإرسال (لو ماتسجّلش لوحده)", use_container_width=True, key="btn_sent"):
+            log_sent("button")
+            st.rerun()
     else:
         st.markdown(
             f'<a href="{wa_url}" target="_blank" style="text-decoration:none;">'
@@ -1158,30 +1422,9 @@ with s1:
             f'padding:9px;border-radius:6px;font-weight:700;">'
             f'📲 إرسال لـ {format_phone_display(phone_chk.value)}</div></a>',
             unsafe_allow_html=True)
-        # «اتجهّز» ≠ «اتبعت»: الموظف بيأكّد الإرسال بإيده (أساس قايمة المتابعة)
-        _sent_key = f"_sent_{st.session_state.quote_id}"
-        if st.session_state.get(_sent_key):
-            st.caption("✔ اتسجّل إن العرض اتبعت للعميل")
-        elif st.button("✅ تم الإرسال للعميل", use_container_width=True, key="btn_sent"):
-            _store = get_event_store()
-            if _store:
-                try:
-                    _contact = ({"name": name_chk.value, "phone": phone_chk.value}
-                                if STORE_CONTACTS and name_chk.ok else None)
-                    _store.append(events_path(month_key()), make_event(
-                        "sent", st.session_state.quote_id, branch=st.session_state.branch,
-                        total=totals["total"], count=totals["count"],
-                        items=[i["name"] for i in items], discount=totals["discount"],
-                        campaign_id=CAMPAIGN, phone_key=PK, contact=_contact,
-                        staff=st.session_state.staff_name, visit_type=st.session_state.visit_type,
-                        area=st.session_state.area, benefits=FHV_IDS,
-                        parent=st.session_state.parent_quote))
-                    st.session_state[_sent_key] = True
-                    flash("success", "✅ اتسجّل إن العرض اتبعت — هيظهر في «متابعة النهاردة» لو العميل ماردّش")
-                except GithubStoreError as e:
-                    flash("error", f"مقدرتش أسجّل الإرسال: {e}")
-            else:
-                flash("warning", "تتبّع العروض مش متظبط في الإعدادات (secrets)")
+        st.caption("التتبّع مش متظبط (secrets) — الإرسال شغّال، بس من غير متابعة ولا تسجيل")
+        if st.button("✅ تم الإرسال للعميل", use_container_width=True, key="btn_sent"):
+            log_sent("button")
             st.rerun()
 
 with s2:
@@ -1220,11 +1463,12 @@ with s3:
         for k in ("items", "pending", "pending_panel", "conflict", "p_name", "p_phone",
                   "p_doctor", "discount_value", "quote_id", "dismissed_offers",
                   "saved_link", "saved_at", "referral_source", "campaign_id", "area",
-                  "visit_type", "parent_quote"):
+                  "visit_type", "parent_quote", "inquiry_ts", "bulk", "bulk_src"):
             st.session_state[k] = DEFAULTS[k] if not isinstance(DEFAULTS[k], list) else []
         st.session_state.p_date = date.today()
         st.session_state.disc_gen += 1
         st.session_state["_show_lost_reason"] = False
+        st.session_state["_wa_last"] = None
         st.query_params.clear()
         st.rerun()
 
