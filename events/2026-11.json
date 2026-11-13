@@ -264,5 +264,33 @@
   ],
   "pk": "4586b17f6c78e05e",
   "visit_type": "lab"
+ },
+ {
+  "type": "sent",
+  "quote_id": "OR-261113-7835",
+  "branch": "Orange (La Cité)",
+  "ts": "2026-11-13T16:42:36",
+  "referral_source": "غير محدد",
+  "total": 2422,
+  "count": 5,
+  "items": [
+   "CBC",
+   "CRP",
+   "HOMA1-IR",
+   "CPK (Total)",
+   "Homocysteine"
+  ],
+  "meta": {
+   "followup_hours": 24,
+   "via": "one_tap",
+   "next_due": "2026-11-14T16:42:36"
+  },
+  "pk": "4586b17f6c78e05e",
+  "discount": 428,
+  "contact": {
+   "name": "محمد محمد احسان",
+   "phone": "201007013365"
+  },
+  "visit_type": "lab"
  }
 ]
